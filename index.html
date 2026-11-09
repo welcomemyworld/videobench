@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VideoBench · 模型评测看板</title>
+<meta name="description" content="VideoBench: models turn prompts into HTML animations, which are recorded and scored by non-competing judge models watching the video.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23141413'/%3E%3Cpath d='M11 9.5l11 6.5-11 6.5z' fill='%23d97757'/%3E%3Crect x='24' y='7' width='2' height='18' rx='1' fill='%23faf9f5'/%3E%3C/svg%3E">
+<link rel="stylesheet" href="assets/site.css">
+</head>
+<body>
+
+<header class="topbar" id="topbar">
+  <div class="wrap bar">
+    <a class="logo" href="#top" aria-label="VideoBench">
+      <svg class="logo-ic" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#141413"/><path d="M11 9.5l11 6.5-11 6.5z" fill="#d97757"/><rect class="ph" x="24" y="7" width="2" height="18" rx="1" fill="#faf9f5"/></svg>
+      <span class="t">VideoBench</span>
+    </a>
+    <nav class="secnav" id="secnav"></nav>
+    <div class="lang" id="lang" role="group" aria-label="Language">
+      <button data-lang="zh">中</button><button data-lang="en">EN</button>
+    </div>
+  </div>
+  <div class="progress" id="progress"></div>
+</header>
+
+<main class="wrap" id="app"><p class="muted" style="padding:80px 0">Loading…</p></main>
+<footer id="foot"></footer>
+
+<script src="assets/fx.js"></script>
+<script src="assets/app.js"></script>
+</body>
+</html>
