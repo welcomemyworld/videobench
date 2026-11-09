@@ -4,7 +4,11 @@ const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/.test(location.host
 const MEDIA = LOCAL ? '/media/' : '/videobench-media/';
 
 const SHORT = { 'gemini-4-argon': 'Argon', 'gpt-6.1-sol': 'GPT-6.1', 'claude-opus-5-5': 'Opus', 'hy4': 'hy4', 'claude-sonnet-5-5': 'Sonnet', 'grok-4.7': 'Grok', 'deepseek-v4-pro': 'DS-V4' };
-const COLOR = { 'gemini-4-argon': '#4e82c3', 'gpt-6.1-sol': '#32302d', 'claude-opus-5-5': '#d97757', 'hy4': '#1b7f79', 'claude-sonnet-5-5': '#e5b696', 'grok-4.7': '#a19e96', 'deepseek-v4-pro': '#5d56a7' };
+const CSSV = getComputedStyle(document.documentElement);
+const cv = (n, fb = '#888888') => CSSV.getPropertyValue(n).trim() || fb;
+const rgbOf = n => { const h = cv(n).replace('#', ''); return [0, 2, 4].map(i => parseInt(h.slice(i, i + 2), 16)); };
+const COLOR = { 'gemini-4-argon': cv('--m-gemini'), 'gpt-6.1-sol': cv('--m-gpt'), 'claude-opus-5-5': cv('--m-opus'), 'hy4': cv('--m-hy'), 'claude-sonnet-5-5': cv('--m-sonnet'), 'grok-4.7': cv('--m-grok'), 'deepseek-v4-pro': cv('--m-deepseek') };
+const HEAT = { lo: rgbOf('--heat-lo'), mid: rgbOf('--heat-mid'), hi: rgbOf('--heat-hi') };
 const LOGO_FILE = { gemini: 'gemini-color', gpt: 'openai', claude: 'claude-color', hy: 'hunyuan-color', grok: 'grok', deepseek: 'deepseek-color', qwen: 'qwen-color', kimi: 'kimi-color', doubao: 'doubao-color' };
 const ST = {
   evaluated: [['已评测', 'Evaluated'], 'easy'], rubric_only: [['待评测（已拆 rubric）', 'Pending (rubric ready)'], ''], video: [['A 半 · Opus 已出视频', 'Half A · Opus video'], ''],
@@ -562,7 +566,7 @@ function setup(D, R3, RV, EN) {
     const median = a => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
     plot.innerHTML = `<svg viewBox="0 0 ${W} ${Hh}"><rect class="quad"/><text class="quad-t"></text><g class="grid"></g><g class="axis"></g>`
       + ORDER.map(m => `<g class="pt" data-m="${m}"><line class="dl dx"/><line class="dl dy"/><line class="h" stroke="${COLOR[m]}" stroke-width="2" opacity=".5"/><line class="v" stroke="${COLOR[m]}" stroke-width="2" opacity=".5"/>
-        <circle class="ring" r="13" fill="none" stroke="${COLOR[m]}" stroke-width="2"/><circle r="13" fill="#fff" stroke="${COLOR[m]}" stroke-width="2.5"/><svg x="-8" y="-8" width="16" height="16" viewBox="0 0 24 24" fill="#141413" fill-rule="evenodd">${logoInner(m)}</svg>
+        <circle class="ring" r="13" fill="none" stroke="${COLOR[m]}" stroke-width="2"/><circle r="13" fill="#fff" stroke="${COLOR[m]}" stroke-width="2.5"/><svg x="-8" y="-8" width="16" height="16" viewBox="0 0 24 24" fill="${cv('--ink')}" fill-rule="evenodd">${logoInner(m)}</svg>
         <text x="17" y="-12">${esc(short(m))}</text></g>`).join('') + '</svg>';
     const svg = $('svg', plot);
     const draw = i => {
@@ -642,7 +646,7 @@ function setup(D, R3, RV, EN) {
       { t: I('按 Necessity', 'By necessity'), sub: I('Rubric 通过率，Explicit / Implicit', 'Rubric pass rate, Explicit / Implicit'), cols: by('nec', distinct('nec')) },
     ];
     const mix = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
-    const color = t => { const c = t < .5 ? mix([204, 98, 64], [240, 238, 230], t * 2) : mix([240, 238, 230], [59, 127, 77], (t - .5) * 2); return `background:rgb(${c});color:${Math.abs(t - .5) > .32 ? '#fff' : 'var(--ink)'}`; };
+    const color = t => { const c = t < .5 ? mix(HEAT.lo, HEAT.mid, t * 2) : mix(HEAT.mid, HEAT.hi, (t - .5) * 2); return `background:rgb(${c});color:${Math.abs(t - .5) > .32 ? '#fff' : 'var(--ink)'}`; };
     const draw = i => {
       S.bd = i;
       const vw = VIEWS[i];
@@ -675,7 +679,7 @@ function setup(D, R3, RV, EN) {
       PM[p.a + '|' + p.b] = p;
       PM[p.b + '|' + p.a] = { ...p, adv: 100 - p.adv, ci95: p.ci95 && [100 - p.ci95[1], 100 - p.ci95[0]], G: p.B, B: p.G };
     });
-    const heat = v => { const a = Math.min(1, Math.pow(Math.abs(v - 50) / 50, .8)) * .9 + .05; return `background:${v >= 50 ? `rgba(59,127,77,${a})` : `rgba(204,98,64,${a})`};color:${a > .5 ? '#fff' : 'var(--ink)'}`; };
+    const heat = v => { const a = Math.min(1, Math.pow(Math.abs(v - 50) / 50, .8)) * .9 + .05; return `background:rgba(${v >= 50 ? HEAT.hi : HEAT.lo},${a});color:${a > .5 ? '#fff' : 'var(--ink)'}`; };
     let k = 0;
     $('#matrix [data-slot]').innerHTML = `<table class="heat"><tr><th></th>${ORDER.map(m => `<th>${mn(m, short(m))}</th>`).join('')}</tr>
       ${ORDER.map(a => `<tr><th class="row">${mn(a, short(a))}</th>${ORDER.map(b => {
@@ -695,7 +699,7 @@ function setup(D, R3, RV, EN) {
 
   // ---------- abs distribution ----------
   function renderAbs() {
-    const DC = { '0': '#b9553d', '0.5': '#c76e3c', '1': '#d18e46', '1.5': '#d8b260', '2': '#8aab67', '2.5': '#58945b', '3': '#3b7f4d' };
+    const DC = Object.fromEntries(['0', '0.5', '1', '1.5', '2', '2.5', '3'].map((k, i) => [k, cv(`--abs-${i}`)]));
     const judges = Object.keys(A.per_judge_scores);
     $('#abs [data-slot]').innerHTML = `<table class="tbl"><tr><th>${I('模型', 'Model')}</th><th>${I('分布', 'Distribution')}</th><th class="num">${I('均值', 'Mean')}</th><th>${I('各评审均分', 'Mean by judge')}</th></tr>
       ${ORDER.map(m => { const d = RB[m].abs_dist, n = Object.values(d).reduce((a, b) => a + b, 0);
@@ -711,7 +715,7 @@ function setup(D, R3, RV, EN) {
     const V = RV.vibe_dict, cb = RB[CORE];
     $('#vibe [data-slot]').innerHTML = `<table class="tbl"><tr><th>${I('标签', 'Tag')}</th>${ORDER.map(m => `<th class="num">${mn(m, short(m))}</th>`).join('')}<th class="num">${short(CORE)} Lift</th></tr>
       ${Object.keys(V).map(t => { const row = ORDER.map(m => RB[m].tag_density[t] || 0), hi = Math.max(...row, 1), pros = V[t].kind === 'pros';
-        return `<tr><td><span class="pill ${V[t].kind}">${esc(t)}</span> ${esc(I(V[t].text, EN.vibe[t] || V[t].text))}</td>${row.map(v => `<td class="num" style="background:rgba(${pros ? '59,127,77' : '204,98,64'},${((v / hi) * .28).toFixed(3)})">${f1(v)}</td>`).join('')}
+        return `<tr><td><span class="pill ${V[t].kind}">${esc(t)}</span> ${esc(I(V[t].text, EN.vibe[t] || V[t].text))}</td>${row.map(v => `<td class="num" style="background:rgba(${pros ? HEAT.hi : HEAT.lo},${((v / hi) * .28).toFixed(3)})">${f1(v)}</td>`).join('')}
           <td class="num">${cb ? delta(cb.tag_lift_vs_baseline[t], [cb.tag_lift_vs_baseline[t], cb.tag_lift_vs_baseline[t]], !pros) : '—'}</td></tr>`; }).join('')}</table>`;
   }
 
