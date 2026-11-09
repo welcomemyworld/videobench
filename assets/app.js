@@ -208,7 +208,7 @@ function setup(D, R3, RV, EN) {
     $$('#lang button').forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
     const NAV = [['leaderboard', '排行榜', 'Leaderboard'], ['method', 'Rubrics 怎么拆', 'Rubrics'], ['core', 'hy4 vs Opus', 'hy4 vs Opus'], ['questions', '逐题结果', 'Per prompt'],
       ['methods', '评审方式', 'Methods'], ['breakdown', 'Rubric 拆解', 'Breakdown'], ['matrix', 'GSB 两两矩阵', 'Pairwise'], ['abs', '绝对分分布', 'Abs. scores'],
-      ['vibe', 'Vibe 标签', 'Vibe tags'], ['agreement', '评审一致性', 'Agreement'], ['cost', '花费', 'Cost'], ['board', '多模型对比', 'Comparison'], ['bank', '题库', 'Prompt bank']];
+      ['vibe', 'Vibe 标签', 'Vibe tags'], ['agreement', '评审一致性', 'Agreement'], ['board', '多模型对比', 'Comparison'], ['bank', '题库', 'Prompt bank']];
     $('#secnav').innerHTML = NAV.map(([id, zh, en]) => `<a href="#${id}">${I(zh, en)}</a>`).join('');
     const MT = METRICS();
     const sec = (id, title, tag, body) => `<section class="sec" id="${id}"><div class="sec-head"><h2><a href="#${id}">${title}</a></h2>${tag ? `<span class="tag" data-tag>${tag}</span>` : ''}</div>${body}</section>`;
@@ -250,7 +250,6 @@ function setup(D, R3, RV, EN) {
         I(`Tag Lift = 该模型密度 − ${BASE} 密度。Pros 为正、Cons 为负是好事。`, `Tag lift = model density − ${BASE} density. Positive for pros and negative for cons is good. `) + NOTES.vibe, '<div class="card"><div class="tbl-wrap" data-slot></div></div>')}
       ${sec('agreement', I('评审一致性', 'Judge agreement'), '', `<div class="card"><div class="tbl-wrap" data-slot></div></div>
         <div class="sec-head" style="margin-top:22px"><h3 style="margin:0;font-size:15px">${I('各评审单独给出的 GSB 优势率', 'GSB win rate by individual judge')}</h3></div><div class="card"><div class="tbl-wrap" data-judges></div></div>`)}
-      ${sec('cost', I('花费', 'Cost'), I(`本轮评审花费 ¥${RV.cost_total}`, `Judging cost this round: ¥${RV.cost_total}`), '<div class="card"><div class="card-body" data-slot></div></div>')}
       ${sec('board', I('多模型对比', 'Model comparison'), I(`按 GSB 优势率排序。每格上为数值，下为相对 ${BASE} 的差值。比率均为百分数。`, `Sorted by GSB win rate. Each cell shows the value, with the difference from ${BASE} below. Rates are percentages.`),
         `<div class="card"><div class="tbl-wrap"><table class="tbl" data-slot></table></div><div class="tbl-foot"><span data-legend></span><button class="btn" data-expand>${I('展开分数明细', 'Expand score breakdown')}</button></div><div class="def" data-def></div></div>`)}
       ${sec('bank', I('全部题库', 'Full prompt bank'), ' ', '<div class="card"><div class="bank-tools" data-tools></div><div class="tbl-wrap"><table class="tbl bank" data-slot></table></div><div class="more"><button class="btn" data-more></button></div></div>')}`;
@@ -258,7 +257,7 @@ function setup(D, R3, RV, EN) {
     stopMark();
     stopMark = playhead($('#mark'));
     renderIntro(MT); renderLeaderboard(MT); renderCore(); renderQuestions(); renderMethods(MT); renderBreakdown();
-    renderMatrix(); renderAbs(); renderVibe(); renderAgreement(); renderCost(); renderBoard(MT); renderBank();
+    renderMatrix(); renderAbs(); renderVibe(); renderAgreement(); renderBoard(MT); renderBank();
     $('#foot').textContent = I(`评审：${M.judges.join(' / ')} · 数据来自 data/all.json 与 data/report_v2.json；Rubric 为 v3（data/rubric3.json）`,
       `Judges: ${M.judges.join(' / ')} · Data from data/all.json and data/report_v2.json; rubric is v3 (data/rubric3.json)`);
     wipe([$('#stats'), $('#method'), ...$$('section.sec > .card, section.sec > .kpis')]);
@@ -731,23 +730,6 @@ function setup(D, R3, RV, EN) {
     $('#agreement [data-slot]').innerHTML = `<table class="tbl">${rows.map(([k, v]) => `<tr><td style="width:300px;color:var(--muted);white-space:normal">${k}</td><td style="white-space:normal">${v}</td></tr>`).join('')}</table>`;
     $('#agreement [data-judges]').innerHTML = `<table class="tbl"><tr><th>${I('评审', 'Judge')}</th>${ORDER.map(m => `<th class="num">${mn(m, short(m))}</th>`).join('')}</tr>
       ${ent(A.per_judge_scores).map(([j, v]) => `<tr><td>${mn(j)}</td>${ORDER.map(m => `<td class="num">${f1(v.gsb[m])}</td>`).join('')}</tr>`).join('')}</table>`;
-  }
-
-  // ---------- cost ----------
-  function renderCost() {
-    const C = RV.cost_cny, total = RV.cost_total;
-    const judges = [...new Set(Object.keys(C).map(k => k.split(':')[1]))];
-    const kinds = [['gsb2', I('GSB 排序', 'GSB ranking'), '#4a4844'], ['judge2', I('绝对分 + Rubric', 'Absolute score + rubric'), '#d97757']];
-    const rows = judges.map(j => ({ j, parts: kinds.map(([k]) => C[`${k}:${j}`] || 0) })).map(r => ({ ...r, sum: r.parts.reduce((a, b) => a + b, 0) })).sort((a, b) => b.sum - a.sum);
-    const hi = Math.max(...rows.map(r => r.sum));
-    $('#cost [data-slot]').innerHTML = `<div class="chart-title"><div><h3>${I('评审花费（¥）', 'Judging cost (¥)')}</h3><p>${I(`按评审模型和评审方式拆分 · 合计 ¥${total}`, `By judge model and method · total ¥${total}`)}</p></div></div>
-      ${rows.map(r => `<div style="display:grid;grid-template-columns:240px 1fr 80px;gap:12px;align-items:center;margin:10px 0">
-        <span style="font-weight:600">${mn(r.j)}</span>
-        <div class="dist" style="height:22px;min-width:0;background:var(--oat)">${r.parts.map((v, i) => `<span data-g="${v}" style="flex-grow:${REDUCE ? v : 0};background:${kinds[i][2]}" title="${kinds[i][1]} ¥${v}"></span>`).join('')}<span style="flex-grow:${hi - r.sum}"></span></div>
-        <span class="num" style="text-align:right;font-weight:600">¥${r.sum.toFixed(2)}</span></div>`).join('')}
-      <div class="legend">${kinds.map(([, n, c]) => `<span><i class="sw" style="background:${c}"></i>${n}</span>`).join('')}</div>
-      <div class="ranks">${Object.entries(C).map(([k, v]) => `${esc(k)} ¥${v}`).join('<br>')}</div>`;
-    onVisible($('#cost'), () => $$('#cost [data-g]').forEach(s => { s.style.flexGrow = s.dataset.g; }));
   }
 
   // ---------- full board ----------
