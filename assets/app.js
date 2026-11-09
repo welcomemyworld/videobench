@@ -13,6 +13,7 @@ const LOGO_FILE = { gemini: 'gemini-color', gpt: 'openai', claude: 'claude-color
 const ST = {
   evaluated: [['已评测', 'Evaluated'], 'easy'], rubric_only: [['待评测（已拆 rubric）', 'Pending (rubric ready)'], ''], video: [['A 半 · Opus 已出视频', 'Half A · Opus video'], ''],
   failed: [['A 半 · 未出视频', 'Half A · no video'], 'hard'], none: [['未生成', 'Not generated'], 'hard'], manual: [['手工精做', 'Hand-crafted'], 'mid'], excluded: [['未纳入', 'Excluded'], ''],
+  blank: [['有空屏 / 无视频 · 已移出', 'Blank or missing output · removed'], 'hard'],
 };
 const CORE = 'hy4';
 const DIMS = ['解题与知识正确性', '教学讲解与逻辑', '可视化与动态演绎', '视听呈现与版式节奏'];
@@ -119,25 +120,29 @@ document.addEventListener('play', e => $$('video').forEach(v => v !== e.target &
 
 // ---------- data ----------
 const json = u => fetch(u).then(r => { if (!r.ok) throw new Error(`${u} ${r.status}`); return r.json(); });
-Promise.all([json('data/all.json'), json('data/rubric3.json'), json('data/report_v2.json'), json('data/en.json'),
+Promise.all([json('data/all.json'), json('data/rubric3.json'), json('data/report_v2.json'), json('data/en.json'), json('data/aesthetic.json'),
   ...[...new Set(Object.values(LOGO_FILE))].map(f => fetch(`assets/logos/${f}.svg`).then(r => r.ok ? r.text() : '').then(t => {
     SVG[f] = t.replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '').replace(/<title>[\s\S]*?<\/title>/, '');
-  }))]).then(([D, R3, RV, EN]) => setup(D, R3, RV, EN)).catch(err => {
+  }))]).then(([D, R3, RV, EN, AE]) => setup(D, R3, RV, EN, AE)).catch(err => {
   $('#app').innerHTML = `<p style="padding:80px 0">数据加载失败 / Failed to load data (${esc(err.message)}). python3 -m http.server</p>`;
   console.error(err);
 });
 
-function setup(D, R3, RV, EN) {
+function setup(D, R3, RV, EN, AE) {
   const M = D.meta, L = D.leaderboard, P = D.prompts, BASE = M.baseline, ORDER = L.map(b => b.model);
   const LB = Object.fromEntries(L.map(b => [b.model, b]));
   const R3L = R3.leaderboard;
+  const KS = R3.meta.kappa_scope !== R3.meta.n_prompts ? R3.meta.kappa_scope : 0;
+  const AEL = AE.leaderboard, AEM = AE.meta;
+  const BLANK = new Set(AEM.blank.map(([s, m]) => s + '|' + m));
+  const aesOf = (q, m) => AE.outputs[q.slug]?.[m];
   const RB = Object.fromEntries(RV.board.map(b => [b.model_id, b]));
   const A = RV.agreement;
   const VB = M.vibe || RV.vibe_dict || {};
   const CATS = Object.keys(M.cat_n).sort((a, b) => M.cat_n[b] - M.cat_n[a]);
+  P.filter(p => p.status === 'evaluated' || p.status === 'blank').forEach((p, i) => { p.qid = 'B' + String(i + 1).padStart(2, '0'); });
   const Q = P.filter(p => p.status === 'evaluated');
-  Q.forEach((q, i) => {
-    q.qid = 'B' + String(i + 1).padStart(2, '0');
+  Q.forEach(q => {
     const r = R3.prompts[q.slug];
     if (!r) return;
     q.items = r.items.map(it => ({ ...it, r: Object.fromEntries(Object.entries(it.r).map(([m, v]) => [m, v == null ? null : !!v])) }));
@@ -152,6 +157,11 @@ function setup(D, R3, RV, EN) {
     b.ci = { ...b.ci, must_have_pass_rate: x.must_ci };
   });
   const scored = q => q.items.filter(i => !i.audio);
+  const aesFig = (q, m) => {
+    if (BLANK.has(q.slug + '|' + m)) return `<span class="pill hard" title="${I('全片无可见内容，不计审美分', 'No visible content; excluded from the aesthetic score')}">${I('空屏', 'Blank')}</span>`;
+    const a = aesOf(q, m);
+    return a ? `<span title="${AEM.dims.map((d, i) => `${I(d.zh, d.en)} ${a.dims[i] ?? '—'}`).join(' · ')}">${I('审美', 'Aes.')} <b>${Math.round(a.score)}</b></span>` : '';
+  };
   const passN = (q, m) => scored(q).filter(i => i.r[m] === true).length;
 
   // translated vocab
@@ -203,6 +213,9 @@ function setup(D, R3, RV, EN) {
       def: I('Must 指 rubric 中标为 Must have 的判定项。', 'Must refers to rubric checks marked Must have.') },
     abs: { label: I('绝对分 0-3', 'Absolute score 0–3'), s: I('绝对分', 'Abs.'), max: 3, fmt: f2, get: m => ({ v: LB[m].abs_mean, ci: LB[m].ci?.abs_mean, d: LB[m].delta?.abs_mean, dci: LB[m].delta_ci?.abs_mean }),
       def: I('绝对分取三家中位数。', 'The absolute score is the median of the three judges.') },
+    aes: { label: I('审美分 0-100', 'Aesthetic 0–100'), s: I('审美', 'Aes.'), max: 100, fmt: f1, nq: AEM.n_prompts, get: m => ({ v: AEL[m]?.aes, ci: AEL[m]?.aes_ci, d: AEL[m]?.aes_d, dci: AEL[m]?.aes_dci }),
+      def: I(`只评好不好看，不评是否完成题目。每个作品得一个 0-100 审美分，按题平均。覆盖 ${AEM.n_prompts} 题、${AEM.n_outputs} 个作品，评审 ${AEM.judge}（与参赛的 Opus、Sonnet 同族）。审美分由 ${AEM.dims.length} 个维度各 0-3 分等权平均换算：构图、色彩、风格统一、冲击与变化看 8 帧缩略图盲评；转场与运动看两段变化最大处的连续帧盲评；节奏由冻结时长、静止占比和硬跳变次数按规则计算。文字排版和精致度不计分：缩略图分辨率下小字和细节看不清，判不准。空屏录像（全片无可见内容）不计入，不按 0 分算。`,
+        `Judges only how good it looks, not whether the prompt was met. Each output gets a 0–100 aesthetic score, averaged over prompts. Covers ${AEM.n_prompts} prompts and ${AEM.n_outputs} outputs, judged by ${AEM.judge} (same family as the competing Opus and Sonnet). The aesthetic score averages ${AEM.dims.length} dimensions scored 0–3 with equal weight: composition, colour, coherence and impact judged blind from the 8-frame sheet; transitions judged blind from consecutive frames around the two largest changes; pacing computed by rule from freeze length, static share and hard jumps. Typography and polish are not scored: small text and fine detail cannot be judged reliably at contact-sheet resolution. Blank recordings (no visible content at all) are excluded rather than scored 0.`) },
   });
 
   function render() {
@@ -227,8 +240,8 @@ function setup(D, R3, RV, EN) {
         <h1 class="mark-sub">${I('模型评测看板', 'Model Evaluation Dashboard')}</h1>
         <div class="chips">${CATS.map(c => `<span class="chip">${esc(c)} <b>${M.cat_n[c]}</b></span>`).join('')}<span class="chip">${I('基准', 'Baseline')} ${mn(BASE)}</span></div>
         <p class="lede">${I(
-          `题目来自 <a href="https://github.com/yihui-dev/awesome-opus5-5-videos" target="_blank" rel="noopener">awesome-opus5-5-videos</a>：模型把提示词写成 HTML 动画，录成视频后由 ${nJ} 家不参赛的评审模型（${M.judges.map(j => mn(j)).join('、')}）直接看视频判分。每题一套 Rubrics，逐条判通过 / 不通过；另做 GSB 多模型排序和 0-3 绝对分。`,
-          `Prompts come from <a href="https://github.com/yihui-dev/awesome-opus5-5-videos" target="_blank" rel="noopener">awesome-opus5-5-videos</a>: each model turns a prompt into an HTML animation, which is recorded as a video and scored by ${nJ} non-competing judge models (${M.judges.map(j => mn(j)).join(', ')}) watching the video directly. Each prompt has its own rubric, judged check by check as pass / fail; we also run GSB multi-model ranking and a 0–3 absolute score.`)}</p>
+          `题目来自 <a href="https://github.com/yihui-dev/awesome-opus5-5-videos" target="_blank" rel="noopener">awesome-opus5-5-videos</a>：模型把提示词写成 HTML 动画，录成视频后由 ${nJ} 家不参赛的评审模型（${M.judges.map(j => mn(j)).join('、')}）直接看视频判分。每题一套 Rubrics，逐条判通过 / 不通过；另做 GSB 多模型排序、0-3 绝对分，以及只看好不好看的审美分。`,
+          `Prompts come from <a href="https://github.com/yihui-dev/awesome-opus5-5-videos" target="_blank" rel="noopener">awesome-opus5-5-videos</a>: each model turns a prompt into an HTML animation, which is recorded as a video and scored by ${nJ} non-competing judge models (${M.judges.map(j => mn(j)).join(', ')}) watching the video directly. Each prompt has its own rubric, judged check by check as pass / fail; we also run GSB multi-model ranking, a 0–3 absolute score, and an aesthetic score that judges only how good it looks.`)}</p>
         <details class="links"><summary class="chip">${I('相关链接', 'Related links')}</summary><div class="menu">
           <a href="https://github.com/yihui-dev/awesome-opus5-5-videos" target="_blank" rel="noopener">awesome-opus5-5-videos ↗</a>
           <a href="#bank">${I('全部题库', 'Full prompt bank')}</a><a href="#questions">${I('逐题结果', 'Per-prompt results')}</a></div></details>
@@ -238,12 +251,12 @@ function setup(D, R3, RV, EN) {
           <div class="step on" data-step="1" id="step1"></div><div class="step" data-step="2" id="step2"></div><div class="step" data-step="3" id="step3"></div>
         </div>
       </section>
-      ${sec('leaderboard', I('排行榜 Leaderboard', 'Leaderboard'), I('按 GSB 优势率排序 · 各评审方式独立出分，不做加权总分 · 括号内为 95% 置信区间', 'Sorted by GSB win rate · each judging method is scored separately, no weighted total · brackets show 95% confidence intervals'),
+      ${sec('leaderboard', I('排行榜 Leaderboard', 'Leaderboard'), I('按所选指标排序 · 各评审方式独立出分，不做加权总分 · 误差线为 95% 置信区间', 'Sorted by the selected metric · each judging method is scored separately, no weighted total · error bars show 95% confidence intervals'),
         `<div class="card"><div class="tabs" data-tabs></div><div class="card-body"><div class="chart-title"><div><h3 data-title></h3><p data-sub></p></div><div class="meta" data-meta></div></div><div class="vbars" data-bars></div><div class="vnames" data-names></div></div><div class="def" data-def></div></div>`)}
       ${sec('core', `${mn(CORE)} vs ${mn(BASE)}`, I('差值后带 * 表示 95% 置信区间不含 0（显著）', '* after a difference means the 95% CI excludes 0 (significant)'), '<div class="kpis" data-slot></div>')}
       ${sec('questions', I('逐题 Rubrics 与结果', 'Per-prompt rubrics and results'), I('一个题 → 一套 Rubrics → 每个模型一个结果 · 点击左侧题目切换', 'One prompt → one rubric → one result per model · pick a prompt on the left'),
         '<div class="card ex"><aside class="ex-side"><div class="ex-filters" data-filters></div><div class="ex-list" data-list></div></aside><div class="ex-main" data-main></div></div>')}
-      ${sec('methods', I('不同评审方式给出的排名', 'Rankings by judging method'), I('同一批录屏，四种打分方式各自出分', 'Same recordings, four scoring methods'),
+      ${sec('methods', I('不同评审方式给出的排名', 'Rankings by judging method'), I('同一批录屏，几种打分方式各自出分', 'Same recordings, several scoring methods'),
         '<div class="card scatter"><div class="tabs" data-tabs></div><div class="card-body"><div class="chart-title"><div><h3 data-title></h3><p data-sub></p></div></div><div data-plot></div><div class="ranks" data-ranks></div></div></div>')}
       ${sec('breakdown', I('Rubric 拆解', 'Rubric breakdown'), I('通过率 %，不含未形成多数的判定', 'Pass rate %, excluding checks without a majority'),
         '<div class="card"><div class="tabs" data-tabs></div><div class="card-body"><div class="chart-title"><div><h3 data-title></h3><p data-sub></p></div></div><div class="tbl-wrap" data-slot></div></div><div class="def" data-def></div></div>')}
@@ -262,8 +275,8 @@ function setup(D, R3, RV, EN) {
     stopMark = playhead($('#mark'));
     renderIntro(MT); renderLeaderboard(MT); renderCore(); renderQuestions(); renderMethods(MT); renderBreakdown();
     renderMatrix(); renderAbs(); renderVibe(); renderAgreement(); renderBoard(MT); renderBank();
-    $('#foot').textContent = I(`评审：${M.judges.join(' / ')} · 数据来自 data/all.json 与 data/report_v2.json；Rubric 为 v3（data/rubric3.json）`,
-      `Judges: ${M.judges.join(' / ')} · Data from data/all.json and data/report_v2.json; rubric is v3 (data/rubric3.json)`);
+    $('#foot').textContent = I(`评审：${M.judges.join(' / ')} · 数据来自 data/all.json 与 data/report_v2.json；Rubric 为 v3（data/rubric3.json）· 审美分评审：${AEM.judge}（data/aesthetic.json）`,
+      `Judges: ${M.judges.join(' / ')} · Data from data/all.json and data/report_v2.json; rubric is v3 (data/rubric3.json) · Aesthetic judge: ${AEM.judge} (data/aesthetic.json)`);
     wipe([$('#stats'), $('#method'), ...$$('section.sec > .card, section.sec > .kpis')]);
     reveal($$('section.sec > .sec-head'));
     watchNav();
@@ -296,7 +309,7 @@ function setup(D, R3, RV, EN) {
       [I('已评测题目', 'Prompts evaluated'), M.n_B_eval, v => Math.round(v), I(`/ 题库 ${M.n_total} 题`, `of ${M.n_total} in the bank`)],
       [I('Rubric 判分项', 'Rubric checks'), R3.meta.n_items, v => Math.round(v), I(`每题 ${Math.round(R3.meta.n_items / M.n_B_eval)} 条左右`, `~${Math.round(R3.meta.n_items / M.n_B_eval)} per prompt`)],
       [I('GSB 显著可分', 'GSB separable pairs'), M.gsb_sig, v => `${Math.round(v)} / ${M.gsb_total}`, I('模型两两对比', 'pairwise model comparisons')],
-      [I('评审一致性', 'Judge agreement'), R3.meta.kappa, v => `κ ${v.toFixed(2)}`, kAvg ? I(`GSB 正反序一致 ${kAvg.toFixed(0)}%`, `GSB forward/reverse agreement ${kAvg.toFixed(0)}%`) : ''],
+      [I('评审一致性', 'Judge agreement'), R3.meta.kappa, v => `κ ${v.toFixed(2)}`, [KS && I(`κ 基于原 ${KS} 题`, `κ over the original ${KS} prompts`), kAvg && I(`GSB 正反序一致 ${kAvg.toFixed(0)}%`, `GSB forward/reverse agreement ${kAvg.toFixed(0)}%`)].filter(Boolean).join(' · ')],
     ];
     $('#stats').innerHTML = stats.map(([k, , , e]) => `<div class="stat"><small>${k}</small><b></b><em>${e}</em></div>`).join('');
     $$('#stats b').forEach((b, i) => {
@@ -313,8 +326,8 @@ function setup(D, R3, RV, EN) {
     });
     const stCount = Object.fromEntries(Object.keys(ST).map(k => [k, P.filter(p => p.status === k).length]));
     const repo = '<a href="https://github.com/yihui-dev/awesome-opus5-5-videos" target="_blank" rel="noopener">awesome-opus5-5-videos</a>';
-    $('#step1').innerHTML = `<p>${I(`题目来自 ${repo}。共 ${P.length} 题 · A 半 ${M.n_A}（Opus 出视频 ${M.n_A_video}）· B 半 ${M.n_B}（已评测 ${M.n_B_eval}）· 手工 ${M.n_manual} · 未纳入 ${M.n_excluded}（提示词仅部分公开）`,
-      `Prompts come from ${repo}. ${P.length} prompts in total · Half A ${M.n_A} (Opus video ${M.n_A_video}) · Half B ${M.n_B} (${M.n_B_eval} evaluated) · hand-crafted ${M.n_manual} · excluded ${M.n_excluded} (prompt only partly public)`)}</p>
+    $('#step1').innerHTML = `<p>${I(`题目来自 ${repo}。共 ${P.length} 题 · A 半 ${M.n_A}（Opus 出视频 ${M.n_A_video}）· B 半 ${M.n_B}（已评测 ${M.n_B_eval}${M.n_excluded_blank ? `，另 ${M.n_excluded_blank} 题因有模型空屏或没出视频已移出` : ''}）· 手工 ${M.n_manual} · 未纳入 ${M.n_excluded}（提示词仅部分公开）`,
+      `Prompts come from ${repo}. ${P.length} prompts in total · Half A ${M.n_A} (Opus video ${M.n_A_video}) · Half B ${M.n_B} (${M.n_B_eval} evaluated${M.n_excluded_blank ? `; ${M.n_excluded_blank} more removed because a model's output was blank or missing` : ''}) · hand-crafted ${M.n_manual} · excluded ${M.n_excluded} (prompt only partly public)`)}</p>
       <div class="chips">${Object.keys(ST).filter(k => stCount[k]).map(k => `<span class="chip">${tSt(k)} <b>${stCount[k]}</b></span>`).join('')}</div>
       <p>${I(`已评测 ${M.n_B_eval} 题按类别：`, `The ${M.n_B_eval} evaluated prompts by category: `)}${CATS.map(c => `${esc(c)} ${M.cat_n[c]}`).join(' · ')}</p>`;
     $('#step2').innerHTML = `<p>${I(`模型把提示词写成 HTML 动画，录成视频后由 ${nJ} 家不参赛的评审模型直接看视频判分。`, `Each model writes the prompt as an HTML animation; the recording is scored by ${nJ} non-competing judge models watching the video directly.`)}</p>
@@ -342,29 +355,34 @@ function setup(D, R3, RV, EN) {
       I('图形构造、3D 空间建模与镜头运镜、连续动态变化、分步视觉呈现、交互或物理模拟效果', 'Shape construction, 3D modelling and camera work, continuous motion, step-by-step visuals, interaction or physics simulation'),
       I('画面清晰无遮挡 / 出框 / 穿帮、3D 死角、版式配色、文字可读、旁白字幕准确、音画同步与整体节奏', 'Clear frames with nothing covered, out of frame or broken, no 3D blind spots, layout and colour, readable text, accurate narration and subtitles, audio-visual sync and overall pacing'),
     ];
-    $('#step3').innerHTML = `<p>${I('GSB、绝对分、Rubric、Vibe 标签四套结果各自出分，不做加权总分；评审直接看完整录像。', 'GSB, absolute score, rubric and vibe tags are scored separately with no weighted total; judges watch the full recording.')}</p>
+    $('#step3').innerHTML = `<p>${I(`GSB、审美分、绝对分、Rubric、Vibe 标签五套结果各自出分，不做加权总分。审美分由 ${AEM.judge} 看缩略图和连续帧盲评，其余由三家评审看完整录像判分。`, `GSB, aesthetic score, absolute score, rubric and vibe tags are scored separately with no weighted total. The aesthetic score is judged blind by ${AEM.judge} from frame sheets and bursts; the rest are scored by the three judges watching the full recording.`)}</p>
       <div class="grade">${[
         ['Rubric', I('逐条判 1 / 0', 'Binary per check'), I('每题一套 Rubrics，逐条判通过 / 不通过。每条三家各判 1 或 0、取多数，没有 N/A；通过率按条数计、不加权。', 'Each prompt has its own rubric, judged check by check as pass / fail. Each check is judged 1 or 0 by all three judges and decided by majority, with no N/A; pass rate counts checks, unweighted.')],
         ['GSB', I('多模型排序', 'Multi-model ranking'), MT.gsb.def],
+        [I('审美分', 'Aesthetic'), I(`${AEM.dims.length} 维 · 0-100`, `${AEM.dims.length} dims · 0–100`), I(`只看好不好看：${AEM.dims.map(d => d.zh).join('、')}各 0-3 分，等权换算。评审 ${AEM.judge}，详见下文。`,
+          `How good it looks: ${AEM.dims.map(d => d.en.toLowerCase()).join(', ')}, each 0–3, equally weighted. Judged by ${AEM.judge}; details below.`)],
         [I('绝对分', 'Absolute score'), I('0-3 分', '0–3 scale'), esc(NOTES.abs)],
         [I('Vibe 标签', 'Vibe tags'), 'Pros / Cons', esc(NOTES.vibe)],
       ].map(([t, k, d]) => `<div><h3>${t}</h3><div class="kind">${k}</div><p>${d}</p></div>`).join('')}</div>
       <h4>${I('Rubrics 怎么拆', 'How rubrics are written')} <span class="muted" style="font-weight:400">· ${I('出题人 gpt-5.5（不参赛）· 只看提示词，不看任何模型作品 · 每题一次拆完，格式不对重拆', 'written by gpt-5.5 (not competing) · from the prompt only, without seeing any model output · one pass per prompt, regenerated if malformed')}</span></h4>
       <p>${I('每道题拆成 <b>8-12 条</b>（最多 20 条）二元判定项。评审看完整录屏，每条只输出 <b>1（满足）或 0（不满足）</b>，没有 0.5，也没有 N/A；看不清、拿不准一律判 0。每条填 6 个字段：',
         'Each prompt is split into <b>8–12</b> (at most 20) binary checks. Judges watch the full recording and output only <b>1 (met) or 0 (not met)</b> per check — no 0.5 and no N/A; anything unclear or uncertain is judged 0. Each check has 6 fields:')}</p>
-      <div class="card tbl-wrap"><table class="tbl"><tr><th style="width:130px">${I('字段', 'Field')}</th><th>${I('取值与填法', 'How to fill it')}</th><th class="num" style="width:230px">${I('40 题实际分布', 'Distribution over 40 prompts')}</th></tr>
+      <div class="card tbl-wrap"><table class="tbl"><tr><th style="width:130px">${I('字段', 'Field')}</th><th>${I('取值与填法', 'How to fill it')}</th><th class="num" style="width:230px">${I(`${R3.meta.n_prompts} 题实际分布`, `Distribution over ${R3.meta.n_prompts} prompts`)}</th></tr>
         ${FIELDS.map(([f, d, v]) => `<tr><td><b>${f}</b></td><td style="white-space:normal">${d}</td><td class="num" style="white-space:normal">${v}</td></tr>`).join('')}</table></div>
       <h4>${I('Dimension 四个维度', 'The four dimensions')} <span class="muted" style="font-weight:400">${I('（全部题统一使用）', '(shared by all prompts)')}</span></h4>
       <div class="card tbl-wrap"><table class="tbl"><tr><th style="width:200px">${I('维度', 'Dimension')}</th><th>${I('判什么', 'What it judges')}</th><th class="num" style="width:120px">${I('条数', 'Checks')}</th></tr>
         ${DIMS.map((d, i) => `<tr><td><b>${tDim(d)}</b></td><td style="white-space:normal">${DIM_DESC[i]}</td><td class="num">${ds.dim[d] || 0}（${Math.round(100 * (ds.dim[d] || 0) / N)}%）</td></tr>`).join('')}</table></div>
       <div class="formula">${I('计分：每条三家评审各判一次取多数；通过率按条数计、不加权。门槛分（每题 0-100）= Must 全过时 60 + 40 × Nice 通过率，任一 Must 不通过则 60 × Must 通过率，Nice 再多也抵不掉一条 Must。<br>当前录屏没有音轨、评审也听不到声音，Evidence 为"原生音频 / 音画联合"的条目暂不送评（表中标 ♪，不计分），待录制加上音频后补判。',
-        'Scoring: each check is judged once by each of the three judges and decided by majority; pass rate counts checks, unweighted. Gate score (0–100 per prompt) = 60 + 40 × Nice pass rate if every Must passes, otherwise 60 × Must pass rate — no amount of Nice makes up for a failed Must.<br>Recordings have no audio track yet and judges cannot hear sound, so checks whose Evidence is "native audio / audio-visual sync" are not judged (marked ♪, not scored) until audio is recorded.')}</div>`;
+        'Scoring: each check is judged once by each of the three judges and decided by majority; pass rate counts checks, unweighted. Gate score (0–100 per prompt) = 60 + 40 × Nice pass rate if every Must passes, otherwise 60 × Must pass rate — no amount of Nice makes up for a failed Must.<br>Recordings have no audio track yet and judges cannot hear sound, so checks whose Evidence is "native audio / audio-visual sync" are not judged (marked ♪, not scored) until audio is recorded.')}</div>
+      <h4>${MT.aes.label}</h4><p>${MT.aes.def}</p>
+      <p>${I(`录屏为 8 fps 预览，掉帧与缓动曲线无法测量。原 ${M.n_B_eval + M.n_excluded_blank} 题中检出空屏录像 ${AEM.blank.length} 个，均为模型代码运行报错；有空屏或没出视频的 ${M.n_excluded_blank} 题已整题移出，GSB、绝对分、Rubric、审美分都只算剩下的 ${M.n_B_eval} 题。`,
+        `Recordings are 8 fps previews, so dropped frames and easing curves cannot be measured. ${AEM.blank.length} blank recordings were found across the original ${M.n_B_eval + M.n_excluded_blank} prompts, all caused by runtime errors in the model's code; the ${M.n_excluded_blank} prompts with a blank or missing output were removed, so GSB, absolute score, rubric and aesthetic score all cover the remaining ${M.n_B_eval}.`)}</p>`;
   }
 
   // ---------- leaderboard chart ----------
   function renderLeaderboard(MT) {
     const sec = $('#leaderboard'), bars = $('[data-bars]', sec), names = $('[data-names]', sec);
-    const keys = ['gsb', 'gate', 'rubric', 'must', 'abs'];
+    const keys = ['aes', 'gsb', 'gate', 'rubric', 'must', 'abs'];
     let shown = false, rank = null;
     bars.innerHTML = '<div class="ax"></div>' + ORDER.map(m => `<div class="vb" data-m="${m}"><div class="col" style="background:${COLOR[m]}"></div><div class="ci"></div><div class="val"><span class="vnum"></span><small></small></div></div>`).join('');
     names.innerHTML = ORDER.map((m, i) => `<div data-m="${m}" class="${m === CORE ? 'core' : ''}" style="--o:${i}"><span class="vlogo">${logo(m)}</span>${esc(m)}<small>${esc(tOrg(LB[m].org))}${m === BASE ? ` · ${I('基准', 'baseline')}` : ''}</small></div>`).join('');
@@ -408,7 +426,7 @@ function setup(D, R3, RV, EN) {
         + `<div class="base" style="bottom:calc(${base / mt.max} * ${H})"></div>`;
       $('[data-title]', sec).textContent = mt.label;
       $('[data-sub]', sec).textContent = I(`${mt.label} · 误差线为 95% 置信区间 · 虚线为基准 ${BASE} · 越高越好`, `${mt.label} · error bars show 95% CIs · dashed line is the baseline ${BASE} · higher is better`);
-      $('[data-meta]', sec).innerHTML = `<span class="chip">${I(`${L.length} 个模型`, `${L.length} models`)}</span><span class="chip">${I(`${Q.length} 题`, `${Q.length} prompts`)}</span>`;
+      $('[data-meta]', sec).innerHTML = `<span class="chip">${I(`${L.length} 个模型`, `${L.length} models`)}</span><span class="chip">${I(`${mt.nq ?? Q.length} 题`, `${mt.nq ?? Q.length} prompts`)}</span>`;
       $('[data-def]', sec).innerHTML = `<p><b>${mt.label}</b>${mt.def}</p><p>${I('Δ 带 * 表示相对基准显著（按题 bootstrap 95% 置信区间不含 0）。', 'Δ marked * is significant vs. the baseline (per-prompt bootstrap 95% CI excludes 0).')}${legend()}</p>`;
     };
     tabs($('[data-tabs]', sec), keys.map(k => MT[k].label), S.lb, i => { S.lb = i; draw(); });
@@ -437,10 +455,11 @@ function setup(D, R3, RV, EN) {
     const cb = RB[CORE], bb = RB[BASE], g = cb.gsb_vs_baseline;
     const v2 = k => ({ v: cb.metrics[k], b: bb.metrics[k], d: cb.deltas_vs_baseline[k], c: cb.deltas_ci95[k] });
     const v3 = k => ({ v: R3L[CORE][k], b: R3L[BASE][k], d: R3L[CORE][k + '_d'], c: R3L[CORE][k + '_dci'] });
-    const K = [[I('GSB 优势率(对全体)', 'GSB win rate (vs all)'), v2('gsb_advantage_rate')], [I('首位率', 'First-place rate'), v2('first_place_rate')], [I('绝对分均值', 'Mean absolute score'), v2('abs_mean'), 0, f2],
+    const aes = { v: AEL[CORE]?.aes, b: AEL[BASE]?.aes, d: AEL[CORE]?.aes_d, c: AEL[CORE]?.aes_dci };
+    const K = [[I('GSB 优势率(对全体)', 'GSB win rate (vs all)'), v2('gsb_advantage_rate')], [I('审美分', 'Aesthetic score'), aes], [I('首位率', 'First-place rate'), v2('first_place_rate')], [I('绝对分均值', 'Mean absolute score'), v2('abs_mean'), 0, f2],
       [I('高分率(≥2)', 'High-score rate (≥2)'), v2('high_score_rate')], [I('Must have 通过率', 'Must have pass rate'), v3('must')], [I('Nice to have 通过率', 'Nice to have pass rate'), v3('nice')],
       [I('Pros 密度', 'Pros density'), v2('pros_density')], [I('Cons 密度', 'Cons density'), v2('cons_density'), 1]];
-    $('#core [data-slot]').innerHTML = (g ? `<div class="kpi wide"><small>${I('直接 GSB', 'Head-to-head GSB')}</small><b data-odo="${g.G} : ${g.S} : ${g.B}"></b><span>${I(`G:S:B，优势率 ${f1(g.advantage_rate)}%（CI ${g.ci95 ? g.ci95.join('~') : '—'}），净胜率 ${f1(g.net_win_rate)}%`, `G:S:B, win rate ${f1(g.advantage_rate)}% (CI ${g.ci95 ? g.ci95.join('~') : '—'}), net win rate ${f1(g.net_win_rate)}%`)}</span></div>` : '')
+    $('#core [data-slot]').innerHTML = (g ? `<div class="kpi"><small>${I('直接 GSB', 'Head-to-head GSB')}</small><b data-odo="${g.G} : ${g.S} : ${g.B}"></b><span>${I(`G:S:B，优势率 ${f1(g.advantage_rate)}%（CI ${g.ci95 ? g.ci95.join('~') : '—'}），净胜率 ${f1(g.net_win_rate)}%`, `G:S:B, win rate ${f1(g.advantage_rate)}% (CI ${g.ci95 ? g.ci95.join('~') : '—'}), net win rate ${f1(g.net_win_rate)}%`)}</span></div>` : '')
       + K.map(([n, x, lb, fm = f1]) => `<div class="kpi"><small>${n}</small><b data-odo="${fm(x.v)}"></b><span>${esc(BASE)} ${fm(x.b)}${I('，', ', ')}Δ ${delta(x.d, x.c, lb, fm)}</span></div>`).join('');
     $$('#core [data-odo]').forEach((b, i) => {
       odo(b, b.dataset.odo, { hold: true });
@@ -478,7 +497,7 @@ function setup(D, R3, RV, EN) {
         <div class="sub-grid anim">
           <div>
             ${vp(q, m, true)}
-            <div class="figs"><span>${I('门槛分', 'Gate')} <b>${r.gate != null ? Math.round(r.gate) : '—'}</b></span><span>${I('绝对分', 'Abs.')} <b>${d.score ?? '—'}</b></span><span>Rubric <b>${passN(q, m)} / ${scored(q).length}</b></span><span>Must <b>${f1(r.must)}%</b></span><span>${I('本题 GSB', 'GSB here')} <b>${f1(d.adv)}</b></span><a href="${MEDIA}eval/${m}/${q.slug}.html" target="_blank" rel="noopener">HTML ↗</a></div>
+            <div class="figs"><span>${I('门槛分', 'Gate')} <b>${r.gate != null ? Math.round(r.gate) : '—'}</b></span><span>${I('绝对分', 'Abs.')} <b>${d.score ?? '—'}</b></span><span>Rubric <b>${passN(q, m)} / ${scored(q).length}</b></span><span>Must <b>${f1(r.must)}%</b></span><span>${I('本题 GSB', 'GSB here')} <b>${f1(d.adv)}</b></span>${aesFig(q, m)}<a href="${MEDIA}eval/${m}/${q.slug}.html" target="_blank" rel="noopener">HTML ↗</a></div>
             <div class="label">${I('Vibe 标签', 'Vibe tags')}</div>
             <div class="tags">${[...(d.pros || []), ...(d.cons || [])].map(tag).join('') || '<span class="muted">—</span>'}</div>
             <div class="label">${I('评审评语', 'Judge comments')}</div>
@@ -505,12 +524,13 @@ function setup(D, R3, RV, EN) {
           <tr class="total"><td>${I('门槛分 0-100', 'Gate score 0–100')}</td>${ms.map(m => { const g = q.r3?.[m]?.gate; return `<td style="color:${g < 60 ? 'var(--bad)' : 'inherit'}">${g != null ? Math.round(g) : '—'}</td>`; }).join('')}</tr>
           <tr class="total"><td>${I('绝对分 0-3', 'Absolute score 0–3')}</td>${ms.map(m => `<td>${q.models[m].score ?? '—'}</td>`).join('')}</tr>
           <tr class="total"><td>${I('本题 GSB 优势率', 'GSB win rate (this prompt)')}</td>${ms.map(m => `<td>${f1(q.models[m].adv)}</td>`).join('')}</tr>
+          ${AE.outputs[q.slug] || ms.some(m => BLANK.has(q.slug + '|' + m)) ? `<tr class="total"><td>${I('审美分 0-100', 'Aesthetic 0–100')}</td>${ms.map(m => `<td>${BLANK.has(q.slug + '|' + m) ? `<span class="ns">${I('空屏', 'blank')}</span>` : aesOf(q, m) ? Math.round(aesOf(q, m).score) : '—'}</td>`).join('')}</tr>` : ''}
         </table></div>${zhNote()}
         <div class="label">${I('各模型结果（点击画面在本页播放）', 'Results per model (click to play)')}</div>
         <div class="tiles">${ms.map(m => { const d = q.models[m]; return `<div class="tile">
           <div class="hd"><b>${mn(m)}</b><span class="pill ${d.adv >= 70 ? 'easy' : d.adv < 40 ? 'hard' : ''}">GSB ${f1(d.adv)}</span></div>
           ${vp(q, m)}
-          <div class="bd"><div class="figs" style="margin-top:0"><span>${I('门槛分', 'Gate')} <b>${q.r3?.[m]?.gate != null ? Math.round(q.r3[m].gate) : '—'}</b></span><span>${I('绝对分', 'Abs.')} <b>${d.score ?? '—'}</b></span><a href="${MEDIA}eval/${m}/${q.slug}.html" target="_blank" rel="noopener">HTML</a></div></div></div>`; }).join('')}</div>`;
+          <div class="bd"><div class="figs" style="margin-top:0"><span>${I('门槛分', 'Gate')} <b>${q.r3?.[m]?.gate != null ? Math.round(q.r3[m].gate) : '—'}</b></span><span>${I('绝对分', 'Abs.')} <b>${d.score ?? '—'}</b></span>${aesFig(q, m)}<a href="${MEDIA}eval/${m}/${q.slug}.html" target="_blank" rel="noopener">HTML</a></div></div></div>`; }).join('')}</div>`;
     };
     const renderMain = zap => {
       const q = QS[S.q];
@@ -560,13 +580,13 @@ function setup(D, R3, RV, EN) {
   // ---------- methods scatter ----------
   function renderMethods(MT) {
     const sec = $('#methods'), plot = $('[data-plot]', sec);
-    const PAIRS = [['gate', 'gsb'], ['rubric', 'gsb'], ['abs', 'gsb'], ['rubric', 'abs']];
+    const PAIRS = [['gate', 'gsb'], ['rubric', 'gsb'], ['abs', 'gsb'], ['rubric', 'abs'], ['aes', 'gsb']];
     const W = 860, Hh = 440, ml = 56, mr = 24, mt = 16, mb = 46;
     const nice = (lo, hi) => { const r = hi - lo, s = [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25].find(x => r / x <= 6) || 25; return { lo: Math.floor(lo / s) * s, hi: Math.ceil(hi / s) * s, s }; };
     const median = a => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
     plot.innerHTML = `<svg viewBox="0 0 ${W} ${Hh}"><rect class="quad"/><text class="quad-t"></text><g class="grid"></g><g class="axis"></g>`
       + ORDER.map(m => `<g class="pt" data-m="${m}"><line class="dl dx"/><line class="dl dy"/><line class="h" stroke="${COLOR[m]}" stroke-width="2" opacity=".5"/><line class="v" stroke="${COLOR[m]}" stroke-width="2" opacity=".5"/>
-        <circle class="ring" r="13" fill="none" stroke="${COLOR[m]}" stroke-width="2"/><circle r="13" fill="#fff" stroke="${COLOR[m]}" stroke-width="2.5"/><svg x="-8" y="-8" width="16" height="16" viewBox="0 0 24 24" fill="${cv('--ink')}" fill-rule="evenodd">${logoInner(m)}</svg>
+        <circle class="ring" r="13" fill="none" stroke="${COLOR[m]}" stroke-width="2"/><circle r="13" fill="${cv('--card')}" stroke="${COLOR[m]}" stroke-width="2.5"/><svg x="-8" y="-8" width="16" height="16" viewBox="0 0 24 24" fill="${cv('--ink')}" fill-rule="evenodd">${logoInner(m)}</svg>
         <text x="17" y="-12">${esc(short(m))}</text></g>`).join('') + '</svg>';
     const svg = $('svg', plot);
     const draw = i => {
@@ -625,8 +645,8 @@ function setup(D, R3, RV, EN) {
     const spear = (a, b) => { const ra = ranksOf(a), rb = ranksOf(b), n = ra.length, ma = ra.reduce((s, x) => s + x, 0) / n, mb = rb.reduce((s, x) => s + x, 0) / n;
       let num = 0, da = 0, db = 0; ra.forEach((x, i) => { num += (x - ma) * (rb[i] - mb); da += (x - ma) ** 2; db += (rb[i] - mb) ** 2; }); return num / Math.sqrt(da * db); };
     const order = k => [...ORDER].sort((a, b) => MT[k].get(b).v - MT[k].get(a).v).map(short).join(' > ');
-    $('[data-ranks]', sec).innerHTML = `${I('不同评审方式给出的排名：', 'Ranking by method:')}${['gsb', 'abs', 'gate', 'rubric', 'must'].map(k => `<br><b>${MT[k].label}</b>${order(k)}`).join('')}
-      <br>${I('方法间 Spearman：', 'Spearman between methods: ')}${[['gsb', 'abs'], ['gsb', 'gate'], ['gsb', 'rubric'], ['gsb', 'must'], ['abs', 'rubric'], ['rubric', 'must']].map(([a, b]) => `${MT[a].s}-${MT[b].s} ${spear(a, b).toFixed(2)}`).join(I('，', ', '))}`;
+    $('[data-ranks]', sec).innerHTML = `${I('不同评审方式给出的排名：', 'Ranking by method:')}${['aes', 'gsb', 'abs', 'gate', 'rubric', 'must'].map(k => `<br><b>${MT[k].label}</b>${order(k)}`).join('')}
+      <br>${I('方法间 Spearman：', 'Spearman between methods: ')}${[['gsb', 'abs'], ['gsb', 'gate'], ['gsb', 'rubric'], ['gsb', 'must'], ['abs', 'rubric'], ['rubric', 'must'], ['gsb', 'aes']].map(([a, b]) => `${MT[a].s}-${MT[b].s} ${spear(a, b).toFixed(2)}`).join(I('，', ', '))}`;
   }
 
   // ---------- rubric breakdown ----------
@@ -724,8 +744,8 @@ function setup(D, R3, RV, EN) {
     const ent = o => Object.entries(o || {});
     const jl = k => mn(k);
     const rows = [
-      [I('Rubric 三评审 Fleiss κ（v3）', 'Rubric Fleiss κ, three judges (v3)'), I(`${R3.meta.kappa}（${R3.meta.kappa_n} 个判定）`, `${R3.meta.kappa} (${R3.meta.kappa_n.toLocaleString('en')} verdicts)`)],
-      [I('Rubric 各评审通过率（v3）', 'Rubric pass rate per judge (v3)'), ent(R3.meta.judge_pass_rate).map(([k, v]) => `${jl(k)} ${f1(v)}%`).join(I('，', ', '))],
+      [I('Rubric 三评审 Fleiss κ（v3）', 'Rubric Fleiss κ, three judges (v3)'), I(`${R3.meta.kappa}（${R3.meta.kappa_n} 个判定${KS ? `，基于原 ${KS} 题` : ''}）`, `${R3.meta.kappa} (${R3.meta.kappa_n.toLocaleString('en')} verdicts${KS ? `, over the original ${KS} prompts` : ''})`)],
+      [I('Rubric 各评审通过率（v3）', 'Rubric pass rate per judge (v3)'), ent(R3.meta.judge_pass_rate).map(([k, v]) => `${jl(k)} ${f1(v)}%`).join(I('，', ', ')) + (KS ? I(`（基于原 ${KS} 题）`, ` (over the original ${KS} prompts)`) : '')],
       [I('绝对分完全一致 / 差≤1', 'Absolute score: exact agreement / within 1'), Object.keys(A.abs_exact_agree).map(k => `${esc(k)} ${f1(A.abs_exact_agree[k])}% / ${f1(A.abs_within1_agree[k])}%`).join(I('，', ', '))],
       [I('各评审绝对分均值（松紧）', 'Mean absolute score per judge (leniency)'), ent(A.abs_mean_by_judge).map(([k, v]) => `${jl(k)} ${v}`).join(I('，', ', '))],
       [I('GSB 同评审正反序一致', 'GSB forward/reverse consistency (same judge)'), ent(A.gsb_fwd_rev_consistency).map(([k, v]) => `${jl(k)} ${f1(v)}%`).join(I('，', ', '))],
@@ -740,12 +760,14 @@ function setup(D, R3, RV, EN) {
   function renderBoard() {
     const sec = $('#board'), tb = $('[data-slot]', sec);
     const cell = (v, d, c, lb, fm = f1, isBase) => `${fm(v)}<span class="ci">${isBase ? I('基准', 'baseline') : delta(d, c, lb, fm)}</span>`;
+    const aesCell = (m, B) => AEL[m] ? `<b>${f1(AEL[m].aes)}</b><span class="ci">${B ? I('基准', 'baseline') : delta(AEL[m].aes_d, AEL[m].aes_dci)}</span>` : '—';
     const COLS = [
       { h: I('门槛分 0-100', 'Gate 0–100'), f: (m, B) => cell(R3L[m].gate, R3L[m].gate_d, R3L[m].gate_dci, 0, f1, B) },
       { h: I('Rubric 通过率', 'Rubric pass'), f: (m, B) => cell(R3L[m].rubric, R3L[m].rubric_d, R3L[m].rubric_dci, 0, f1, B) },
       { h: I('Must 通过率', 'Must pass'), f: (m, B) => cell(R3L[m].must, R3L[m].must_d, R3L[m].must_dci, 0, f1, B) },
       { h: I('Must 全过题数', 'All-Must prompts'), f: m => `${R3L[m].must_all_n ?? Math.round((LB[m].must_have_all_pass_prompt_rate || 0) * M.n_B_eval / 100)} / ${M.n_B_eval}` },
       { h: I('绝对分 0-3', 'Abs. 0–3'), ext: 1, f: (m, B) => cell(LB[m].abs_mean, LB[m].delta?.abs_mean, LB[m].delta_ci?.abs_mean, 0, f2, B) },
+      { h: I('审美胜率', 'Aesthetic win rate'), ext: 1, f: m => AEL[m] ? `${f1(AEL[m].wr)}<span class="ci">[${AEL[m].wr_ci.join(', ')}]</span>` : '—' },
       ...CATS.map(c => ({ h: `${esc(c)}<span class="ci">${I(`${M.cat_n[c]} 题`, `${M.cat_n[c]} prompts`)}</span>`, ext: 1, f: m => f1(LB[m].by_cat[c]) })),
       { h: I('Nice 通过率', 'Nice pass'), ext: 1, f: (m, B) => cell(R3L[m].nice, R3L[m].nice_d, R3L[m].nice_dci, 0, f1, B) },
       ...[['gsb_net_win_rate', '净胜率', 'Net win'], ['first_place_rate', '首位率', 'First place'], ['high_score_rate', '高分率', 'High score'], ['full_score_rate', '满分率', 'Full score'], ['low_score_rate', '低分率', 'Low score', 1], ['pros_density', 'Pros 密度', 'Pros density'], ['cons_density', 'Cons 密度', 'Cons density', 1]]
@@ -753,10 +775,11 @@ function setup(D, R3, RV, EN) {
       { h: `vs ${short(BASE)} G:S:B`, ext: 1, f: m => RB[m].gsb_vs_baseline ? `${RB[m].gsb_vs_baseline.G}:${RB[m].gsb_vs_baseline.S}:${RB[m].gsb_vs_baseline.B}` : '—' },
       { h: I('录像', 'Recording'), ext: 1, f: m => Object.entries(RB[m].render).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') },
     ];
-    tb.innerHTML = `<tr><th>${I('排名', 'Rank')}</th><th>${I('模型', 'Model')}</th><th class="num">${I('GSB 优势率', 'GSB win rate')}</th><th></th><th class="num">Δ vs ${short(BASE)}</th>${COLS.map(c => `<th class="num ${c.ext ? 'ext' : ''}">${c.h}</th>`).join('')}</tr>
+    tb.innerHTML = `<tr><th>${I('排名', 'Rank')}</th><th>${I('模型', 'Model')}</th><th class="num">${I('审美分 0-100', 'Aesthetic 0–100')}<span class="ci">${I(`评审 ${short(AEM.judge)}`, `judge ${short(AEM.judge)}`)}</span></th><th class="num">${I('GSB 优势率', 'GSB win rate')}</th><th></th><th class="num">Δ vs ${short(BASE)}</th>${COLS.map(c => `<th class="num ${c.ext ? 'ext' : ''}">${c.h}</th>`).join('')}</tr>
       ${L.map((b, i) => { const m = b.model, B = m === BASE; return `<tr class="${m === CORE ? 'core' : B ? 'base' : ''}">
         <td><span class="rank ${i < 3 ? 'r' + (i + 1) : ''}">${i + 1}</span></td>
         <td class="model">${mn(m)}<small>${esc(tOrg(b.org))}</small></td>
+        <td class="num">${aesCell(m, B)}</td>
         <td class="num"><b>${f1(b.gsb_advantage_rate)}</b><span class="ci">[${b.ci.gsb_advantage_rate.map(x => (+x).toFixed(1)).join(', ')}]</span></td>
         <td><span class="mini-bar"><i data-w="${b.gsb_advantage_rate}" style="background:${COLOR[m]}"></i></span></td>
         <td class="num">${B ? `<span class="ns">${I('基准', 'baseline')}</span>` : delta(b.delta?.gsb_advantage_rate, b.delta_ci?.gsb_advantage_rate)}</td>
@@ -764,9 +787,11 @@ function setup(D, R3, RV, EN) {
     $('[data-legend]', sec).innerHTML = legend();
     $('[data-def]', sec).innerHTML = I(
       `<p>GSB 优势率：每题由 ${nJ} 家评审给所有模型的视频排序（正序、倒序各一次，抵消位置偏差），再拆成两两比较，胜 1、平 0.5、负 0 取平均。分类列是该类题目上的 GSB 优势率。</p>
+       <p>审美分：只看好不好看，不看是否完成题目。每个作品按${AEM.dims.map(d => d.zh).join('、')} ${AEM.dims.length} 维各 0-3 分，等权换算成 0-100，按题平均。评审 ${AEM.judge}，节奏按运动指标规则计算。展开明细里的「审美胜率」是同一题内和其余 ${L.length - 1} 家逐一比较（胜 1、平 0.5、负 0）的结果。</p>
        <p>绝对分取三家中位数；Rubric 按 6 字段规范拆分（Priority / Dimension / Evidence / Type / Necessity），每条三家各判 1 或 0、取多数，没有 N/A；依赖声音的条目暂未送评（待音频录制），不计入，通过率按条数计、不加权；Must 指 rubric 中标为 Must have 的判定项。</p>
        <p>门槛分（每题 0-100）：Must 全过 = 60 + 40 × Nice 通过率；任一 Must 不通过则封顶在 60 以下（= 60 × Must 通过率），Nice 再多也抵不掉一条 Must；未判定的项不计。Δ 带 * 表示相对基准显著（按题 bootstrap 95% 置信区间不含 0）。</p>`,
       `<p>GSB win rate: for each prompt, each of the ${nJ} judges ranks every model's video (once forward, once reversed, to cancel position bias); rankings are split into pairwise comparisons scored win 1, tie 0.5, loss 0, then averaged. Category columns are the GSB win rate on prompts of that category.</p>
+       <p>Aesthetic score: how good it looks, not whether the prompt was met. Each output's ${AEM.dims.map(d => d.en.toLowerCase()).join(', ')} (${AEM.dims.length} dimensions, 0–3 each) are averaged with equal weight into a 0–100 score, then averaged over prompts. Judged by ${AEM.judge}, with pacing computed by rule from motion metrics. "Aesthetic win rate" in the expanded breakdown compares each output within the prompt against each of the other ${L.length - 1} models (win 1, tie 0.5, loss 0).</p>
        <p>The absolute score is the median of the three judges. The rubric uses the 6-field spec (Priority / Dimension / Evidence / Type / Necessity); each check is judged 1 or 0 by all three judges and decided by majority, with no N/A; audio-dependent checks are not judged yet (awaiting audio recording) and are excluded; pass rate counts checks, unweighted. Must refers to rubric checks marked Must have.</p>
        <p>Gate score (0–100 per prompt): if every Must passes, 60 + 40 × Nice pass rate; if any Must fails, capped below 60 (= 60 × Must pass rate) — no amount of Nice makes up for a failed Must; unjudged checks are excluded. Δ marked * is significant vs. the baseline (per-prompt bootstrap 95% CI excludes 0).</p>`);
     const btn = $('[data-expand]', sec);
@@ -785,7 +810,7 @@ function setup(D, R3, RV, EN) {
     let rows = P, shown = 0;
     const PAGE = 80;
     const head = `<tr><th>No.</th><th>ID</th><th>${I('题目', 'Prompt')}</th><th>${I('类别', 'Category')}</th><th>${I('难度', 'Difficulty')}</th><th class="num">${I('Rubric 项', 'Rubric checks')}</th><th class="num">${I('平均绝对分', 'Mean abs.')}</th><th>${I('状态', 'Status')}</th></tr>`;
-    const row = p => { const t = tBankTitle(p); return `<tr class="row" data-no="${p.no}"><td class="muted">${p.no}</td><td><b>${p.qid ? `<a href="#q-${p.qid}">${p.qid}</a>` : '—'}</b></td>
+    const row = p => { const t = tBankTitle(p); return `<tr class="row" data-no="${p.no}"><td class="muted">${p.no}</td><td><b>${p.qid ? p.status === 'evaluated' ? `<a href="#q-${p.qid}">${p.qid}</a>` : `<span class="muted">${p.qid}</span>` : '—'}</b></td>
       <td class="title">${esc(t.slice(0, 130))}${t.length > 130 ? '…' : ''}<small>@${esc(p.author)}</small></td>
       <td><span class="pill">${esc(p.category)}</span></td><td>${p.diff ? `<span class="pill ${diffCls(p.diff)}">${esc(tDiff(p.diff))}</span>` : '—'}</td>
       <td class="num">${QS[p.slug]?.items?.length ?? p.rubric?.length ?? '—'}</td><td class="num">${p.abs_avg != null ? f2(p.abs_avg) : '—'}</td>
@@ -796,6 +821,8 @@ function setup(D, R3, RV, EN) {
       else if (p.status === 'failed') right = `<div class="label">${I('Opus 5.5 产物', 'Opus 5.5 output')}</div><p style="color:var(--bad)">${I('未出视频：', 'No video: ')}${esc(tWhy(p.why))}</p>${p.html ? `<p class="muted"><a href="${MEDIA}${p.html}" target="_blank" rel="noopener">${I('查看 HTML', 'View HTML')}</a></p>` : ''}`;
       else if (p.status === 'rubric_only') right = `<div class="label">${I(`Rubrics（${p.rubric.length} 条，尚未跑多模型）`, `Rubric (${p.rubric.length} checks, not yet run on all models)`)}</div><ul class="items">${p.rubric.map((r, i) => `<li><span class="muted">${i + 1}.</span><span>${r.w >= 3 ? prio('Must have') : prio('')} ${esc(r.c)}<small>${esc(r.dim)} / ${esc(r.level)}</small></span></li>`).join('')}</ul>${zhNote()}`;
       else if (p.status === 'manual') right = `<div class="label">${I('手工精做', 'Hand-crafted')}</div>`;
+      else if (p.status === 'blank') right = `<div class="label">${I('已移出评测', 'Removed from evaluation')}</div><p style="color:var(--bad)">${ORDER.filter(m => BLANK.has(p.slug + '|' + m) || !p.models?.[m]?.has_video)
+        .map(m => `${mn(m)} ${BLANK.has(p.slug + '|' + m) ? I('空屏', 'blank') : I('未出视频', 'no video')}`).join(I('，', ', '))}</p>`;
       else right = `<p class="muted">${esc(tWhy(p.why) || I('未参与生成和评测', 'Not generated or evaluated'))}</p>`;
       return `<tr class="det"><td colspan="8"><div class="det-grid"><div><div class="label">${I('提示词', 'Prompt')}</div><div class="prompt">${esc(p.prompt)}</div>
         <p class="muted" style="font-size:12px">${esc(p.slug)} · @${esc(p.author)}${p.post_url ? ` · <a href="${esc(p.post_url)}" target="_blank" rel="noopener">${I('原帖', 'Original post')}</a>` : ''}</p></div><div>${right}</div></div></td></tr>`;
@@ -809,8 +836,8 @@ function setup(D, R3, RV, EN) {
     const render = () => {
       const kw = $('[data-kw]', tools).value.trim().toLowerCase(), c = $('[data-cat]', tools).value, d = $('[data-diff]', tools).value, s = $('[data-st]', tools).value;
       rows = P.filter(p => (!kw || [p.qid, p.slug, p.author, p.prompt, p.summary, EN.summary[p.slug]].join(' ').toLowerCase().includes(kw)) && (!c || p.category === c) && (!d || p.diff === d) && (!s || p.status === s));
-      $('[data-tag]', sec).textContent = I(`共 ${P.length} 题，当前显示 ${rows.length} 题 · A 半 ${M.n_A}（Opus 出视频 ${M.n_A_video}）· B 半 ${M.n_B}（已评测 ${M.n_B_eval}）· 手工 ${M.n_manual} · 未纳入 ${M.n_excluded}（提示词仅部分公开）`,
-        `${P.length} prompts, showing ${rows.length} · Half A ${M.n_A} (Opus video ${M.n_A_video}) · Half B ${M.n_B} (${M.n_B_eval} evaluated) · hand-crafted ${M.n_manual} · excluded ${M.n_excluded} (prompt only partly public)`);
+      $('[data-tag]', sec).textContent = I(`共 ${P.length} 题，当前显示 ${rows.length} 题 · A 半 ${M.n_A}（Opus 出视频 ${M.n_A_video}）· B 半 ${M.n_B}（已评测 ${M.n_B_eval}${M.n_excluded_blank ? `，另移出 ${M.n_excluded_blank}` : ''}）· 手工 ${M.n_manual} · 未纳入 ${M.n_excluded}（提示词仅部分公开）`,
+        `${P.length} prompts, showing ${rows.length} · Half A ${M.n_A} (Opus video ${M.n_A_video}) · Half B ${M.n_B} (${M.n_B_eval} evaluated${M.n_excluded_blank ? `, ${M.n_excluded_blank} removed` : ''}) · hand-crafted ${M.n_manual} · excluded ${M.n_excluded} (prompt only partly public)`);
       tb.innerHTML = head;
       shown = 0;
       page();
@@ -823,7 +850,7 @@ function setup(D, R3, RV, EN) {
       const tr = e.target.closest('tr.row');
       if (!tr) return;
       const p = P[+tr.dataset.no - 1];
-      if (p.qid) { e.preventDefault(); window.__goQ(p.qid); return; }
+      if (p.status === 'evaluated') { e.preventDefault(); window.__goQ(p.qid); return; }
       if (e.target.closest('a')) return;
       const nx = tr.nextElementSibling;
       if (nx?.classList.contains('det')) { nx.remove(); return; }
