@@ -1,10 +1,10 @@
 (() => {
-const { REDUCE, onVisible, reveal, countUp, playhead } = window.FX;
+const { REDUCE, onVisible, reveal, odo, wipe, chapters, peek, tvStatic, slider, playhead } = window.FX;
 const LOCAL = /^(localhost|127\.0\.0\.1|\[::1\]|0\.0\.0\.0)$/.test(location.hostname);
 const MEDIA = LOCAL ? '/media/' : '/videobench-media/';
 
 const SHORT = { 'gemini-4-argon': 'Argon', 'gpt-6.1-sol': 'GPT-6.1', 'claude-opus-5-5': 'Opus', 'hy4': 'hy4', 'claude-sonnet-5-5': 'Sonnet', 'grok-4.7': 'Grok', 'deepseek-v4-pro': 'DS-V4' };
-const COLOR = { 'gemini-4-argon': '#6a9bcc', 'gpt-6.1-sol': '#788c5d', 'claude-opus-5-5': '#d97757', 'hy4': '#c46686', 'claude-sonnet-5-5': '#e3b08f', 'grok-4.7': '#a19e94', 'deepseek-v4-pro': '#3f5f8f' };
+const COLOR = { 'gemini-4-argon': '#4e82c3', 'gpt-6.1-sol': '#32302d', 'claude-opus-5-5': '#d97757', 'hy4': '#1b7f79', 'claude-sonnet-5-5': '#e5b696', 'grok-4.7': '#a19e96', 'deepseek-v4-pro': '#5d56a7' };
 const LOGO_FILE = { gemini: 'gemini-color', gpt: 'openai', claude: 'claude-color', hy: 'hunyuan-color', grok: 'grok', deepseek: 'deepseek-color', qwen: 'qwen-color', kimi: 'kimi-color', doubao: 'doubao-color' };
 const ST = {
   evaluated: [['已评测', 'Evaluated'], 'easy'], rubric_only: [['待评测（已拆 rubric）', 'Pending (rubric ready)'], ''], video: [['A 半 · Opus 已出视频', 'Half A · Opus video'], ''],
@@ -38,12 +38,31 @@ const delta = (d, c, lowerBetter, fmt = f1) => {
 };
 const tabs = (box, list, on, cb) => {
   box.innerHTML = list.map((t, i) => `<button class="tab ${i === on ? 'on' : ''}" data-i="${i}">${t}</button>`).join('');
+  const place = slider(box, '.tab.on', 'tab-ind');
   box.addEventListener('click', e => {
     const b = e.target.closest('[data-i]');
     if (!b) return;
     $$('.tab', box).forEach(x => x.classList.toggle('on', x === b));
+    place();
     cb(+b.dataset.i);
   });
+};
+// Row / column crosshair over a heat table, with a floating tooltip.
+const crosshair = (tb, tip) => {
+  const clear = () => { tb.classList.remove('xh'); $$('.x-on, .x-hot', tb).forEach(c => c.classList.remove('x-on', 'x-hot')); peek.hide(); };
+  tb.addEventListener('pointerover', e => {
+    const td = e.target.closest('td');
+    if (!td || td.classList.contains('self')) { clear(); return; }
+    $$('.x-on, .x-hot', tb).forEach(c => c.classList.remove('x-on', 'x-hot'));
+    [...tb.rows].forEach(r => r.cells[td.cellIndex]?.classList.add('x-on'));
+    [...td.parentElement.cells].forEach(c => c.classList.add('x-on'));
+    td.classList.add('x-hot');
+    tb.classList.add('xh');
+    const h = e.pointerType === 'mouse' && tip(td);
+    if (h) peek.show(h, e.clientX, e.clientY); else peek.hide();
+  });
+  tb.addEventListener('pointermove', e => { if (e.pointerType === 'mouse') peek.move(e.clientX, e.clientY); });
+  tb.addEventListener('pointerleave', clear);
 };
 
 // ---------- logos ----------
@@ -60,12 +79,9 @@ const logo = m => { const s = logoInner(m); return s ? `<svg class="lg" viewBox=
 const mn = (m, label = m) => `<span class="mname">${logo(m)}${esc(label)}</span>`;
 
 // ---------- page chrome ----------
-const topbar = $('#topbar'), prog = $('#progress');
-addEventListener('scroll', () => {
-  topbar.classList.toggle('scrolled', scrollY > 8);
-  const max = document.documentElement.scrollHeight - innerHeight;
-  prog.style.transform = `scaleX(${max > 0 ? Math.min(1, scrollY / max) : 0})`;
-}, { passive: true });
+const topbar = $('#topbar');
+addEventListener('scroll', () => topbar.classList.toggle('scrolled', scrollY > 8), { passive: true });
+const CH = chapters($('#scrub'), $('#tcode'));
 
 const framePos = i => `${(i % 4) * 100 / 3}% ${i < 4 ? 0 : 100}%`;
 const vp = (q, m, big) => {
@@ -91,7 +107,7 @@ document.addEventListener('click', e => {
   $$('video').forEach(v => v.pause());
   el.innerHTML = '';
   const v = document.createElement('video');
-  Object.assign(v, { src: el.dataset.src, controls: true, autoplay: true, muted: true, playsInline: true });
+  Object.assign(v, { src: el.dataset.src, controls: true, autoplay: true, muted: true, playsInline: true, className: 'crt' });
   el.append(v);
   v.play().catch(() => {});
 });
@@ -151,11 +167,23 @@ function setup(D, R3, RV, EN) {
     abs: I(RV.notes.abs, EN.notes.abs),
     vibe: I(RV.notes.vibe, EN.notes.vibe),
   };
-  const legend = () => `<span style="color:#c2410c">■</span> hy4　<span style="color:#6a9bcc">■</span> ${I('基准', 'baseline')} ${esc(BASE)}`;
+  const legend = () => `<span style="color:${COLOR[CORE]}">■</span> ${esc(CORE)}　<span style="color:${COLOR[BASE]}">■</span> ${I('基准', 'baseline')} ${esc(BASE)}`;
   const nJ = M.judges.length;
 
   const S = { lb: 0, q: Q[0].slug, m: CORE, pane: 'work', sc: 0, bd: 0, qCat: '' };
   let stopMark = () => {};
+
+  // each model's top-scoring output (per-prompt GSB, then gate score) for hover previews
+  const BEST = Object.fromEntries(ORDER.map(m => [m, Q.filter(q => q.models[m]?.has_video)
+    .sort((a, b) => (b.models[m].adv ?? 0) - (a.models[m].adv ?? 0) || (b.r3?.[m]?.gate ?? 0) - (a.r3?.[m]?.gate ?? 0))[0]]));
+  const sheet = (m, q) => `${MEDIA}eval/${m}/${q.slug}.sheet.jpg`;
+  let PEEK = {}, warm = false;
+  const peekHTML = m => PEEK[m] ??= (q => q
+    ? `<div class="pk-hd">${mn(m)}<span class="mono">${q.qid}</span></div><div class="fb" style="background-image:url('${sheet(m, q)}')"></div>
+       <div class="pk-cap">${esc(tSum(q))}</div><div class="pk-ft">${I(`最佳作品 · 本题 GSB ${f1(q.models[m].adv)} · 点击打开`, `Top output · GSB ${f1(q.models[m].adv)} on this prompt · click to open`)}</div>`
+    : `<div class="pk-hd">${mn(m)}</div>`)(BEST[m]);
+  const warmPeeks = () => { if (warm) return; warm = true; ORDER.forEach(m => { if (BEST[m]) new Image().src = sheet(m, BEST[m]); }); };
+  const openBest = m => { if (!BEST[m]) return; peek.hide(); window.__goQ(BEST[m].qid, m); };
 
   const METRICS = () => ({
     gsb: { label: I('GSB 优势率', 'GSB win rate'), s: 'GSB', max: 100, fmt: f1, get: m => ({ v: LB[m].gsb_advantage_rate, ci: LB[m].ci?.gsb_advantage_rate, d: LB[m].delta?.gsb_advantage_rate, dci: LB[m].delta_ci?.gsb_advantage_rate }),
@@ -174,6 +202,7 @@ function setup(D, R3, RV, EN) {
   });
 
   function render() {
+    PEEK = {};
     document.documentElement.lang = LANG === 'en' ? 'en' : 'zh-CN';
     document.title = I('VideoBench · 模型评测看板', 'VideoBench · Model Evaluation Dashboard');
     $$('#lang button').forEach(b => b.classList.toggle('on', b.dataset.lang === LANG));
@@ -187,9 +216,9 @@ function setup(D, R3, RV, EN) {
     $('#app').innerHTML = `
       <section class="intro" id="top">
         <div class="mark" id="mark" role="img" aria-label="VideoBench">
-          <div class="mark-word"><span class="w-base">VideoBench</span><span class="w-fill" aria-hidden="true">VideoBench</span></div>
-          <div class="mark-strip">${STRIP.map(([m, s, i]) => `<i style="background-image:url('${MEDIA}eval/${m}/${s}.sheet.jpg');background-position:${framePos(i)}"></i>`).join('')}</div>
-          <span class="mark-head"></span><span class="mark-tc"></span>
+          <div class="mark-word"><span class="w-base">VideoBench</span><span class="w-fill" aria-hidden="true">Video<b>Bench</b></span><span class="w-glint" aria-hidden="true">VideoBench</span></div>
+          <div class="mark-strip">${STRIP.map(([m, s, i], k) => `<i style="background-image:url('${MEDIA}eval/${m}/${s}.sheet.jpg');background-position:${framePos(i)};--k:${k}"></i>`).join('')}</div>
+          <span class="mark-head"></span><span class="mark-tc"><i></i><span></span></span>
         </div>
         <h1 class="mark-sub">${I('模型评测看板', 'Model Evaluation Dashboard')}</h1>
         <div class="chips">${CATS.map(c => `<span class="chip">${esc(c)} <b>${M.cat_n[c]}</b></span>`).join('')}<span class="chip">${I('基准', 'Baseline')} ${mn(BASE)}</span></div>
@@ -232,13 +261,18 @@ function setup(D, R3, RV, EN) {
     renderMatrix(); renderAbs(); renderVibe(); renderAgreement(); renderCost(); renderBoard(MT); renderBank();
     $('#foot').textContent = I(`评审：${M.judges.join(' / ')} · 数据来自 data/all.json 与 data/report_v2.json；Rubric 为 v3（data/rubric3.json）`,
       `Judges: ${M.judges.join(' / ')} · Data from data/all.json and data/report_v2.json; rubric is v3 (data/rubric3.json)`);
-    reveal($$('.stats .stat, section.sec > .card, section.sec > .kpis'));
+    wipe([$('#stats'), $('#method'), ...$$('section.sec > .card, section.sec > .kpis')]);
+    reveal($$('section.sec > .sec-head'));
     watchNav();
+    CH.set([['top', I('简介', 'Overview')], ...NAV.map(([id, zh, en]) => [id, I(zh, en)])]
+      .map(([id, title]) => ({ title, el: $('#' + id) })).filter(c => c.el)
+      .sort((a, b) => a.el.compareDocumentPosition(b.el) & Node.DOCUMENT_POSITION_FOLLOWING ? -1 : 1));
   }
 
   function watchNav() {
-    if (!('IntersectionObserver' in window)) return;
     const nav = $('#secnav'), links = $$('a', nav);
+    const place = slider(nav, 'a.on', 'nav-ind');
+    if (!('IntersectionObserver' in window)) return;
     const io = new IntersectionObserver(es => es.forEach(e => {
       if (!e.isIntersecting) return;
       links.forEach(a => {
@@ -246,6 +280,7 @@ function setup(D, R3, RV, EN) {
         a.classList.toggle('on', on);
         if (on) nav.scrollTo({ left: a.offsetLeft - nav.clientWidth / 2 + a.clientWidth / 2, behavior: 'smooth' });
       });
+      place();
     }), { rootMargin: '-45% 0px -50% 0px' });
     links.forEach(a => { const t = $(a.getAttribute('href')); if (t) io.observe(t); });
   }
@@ -261,7 +296,11 @@ function setup(D, R3, RV, EN) {
       [I('评审一致性', 'Judge agreement'), R3.meta.kappa, v => `κ ${v.toFixed(2)}`, kAvg ? I(`GSB 正反序一致 ${kAvg.toFixed(0)}%`, `GSB forward/reverse agreement ${kAvg.toFixed(0)}%`) : ''],
     ];
     $('#stats').innerHTML = stats.map(([k, , , e]) => `<div class="stat"><small>${k}</small><b></b><em>${e}</em></div>`).join('');
-    $$('#stats b').forEach((b, i) => countUp(b, stats[i][1], stats[i][2]));
+    $$('#stats b').forEach((b, i) => {
+      const s = stats[i][2](stats[i][1]);
+      odo(b, s, { hold: true });
+      onVisible(b, () => odo(b, s, { delay: 200 + i * 120 }));
+    });
 
     $('#stepTabs').addEventListener('click', e => {
       const b = e.target.closest('[data-step]');
@@ -323,15 +362,23 @@ function setup(D, R3, RV, EN) {
   function renderLeaderboard(MT) {
     const sec = $('#leaderboard'), bars = $('[data-bars]', sec), names = $('[data-names]', sec);
     const keys = ['gsb', 'gate', 'rubric', 'must', 'abs'];
-    let shown = false;
-    bars.innerHTML = '<div class="ax"></div>' + ORDER.map(m => `<div class="vb" data-m="${m}"><div class="col" style="background:${COLOR[m]}"></div><div class="ci"></div><div class="val"></div></div>`).join('');
-    names.innerHTML = ORDER.map(m => `<div data-m="${m}" class="${m === CORE ? 'core' : ''}"><span class="vlogo">${logo(m)}</span>${esc(m)}<small>${esc(tOrg(LB[m].org))}${m === BASE ? ` · ${I('基准', 'baseline')}` : ''}</small></div>`).join('');
+    let shown = false, rank = null;
+    bars.innerHTML = '<div class="ax"></div>' + ORDER.map(m => `<div class="vb" data-m="${m}"><div class="col" style="background:${COLOR[m]}"></div><div class="ci"></div><div class="val"><span class="vnum"></span><small></small></div></div>`).join('');
+    names.innerHTML = ORDER.map((m, i) => `<div data-m="${m}" class="${m === CORE ? 'core' : ''}" style="--o:${i}"><span class="vlogo">${logo(m)}</span>${esc(m)}<small>${esc(tOrg(LB[m].org))}${m === BASE ? ` · ${I('基准', 'baseline')}` : ''}</small></div>`).join('');
     const H = '(100% - 48px)';
+    const badge = (m, d) => {
+      const host = $(`[data-m="${m}"]`, names);
+      $('.rk', host)?.remove();
+      host.insertAdjacentHTML('beforeend', `<b class="rk ${d > 0 ? 'up' : 'dn'}">${d > 0 ? '▲' : '▼'}${Math.abs(d)}</b>`);
+      const b = host.lastElementChild;
+      setTimeout(() => b.remove(), 2300);
+    };
     const draw = () => {
       const mt = MT[keys[S.lb]];
       const rows = ORDER.map(m => ({ m, ...mt.get(m) })).sort((a, b) => b.v - a.v);
       const base = mt.get(BASE).v;
       const pos = v => `calc(${(shown ? v : 0) / mt.max} * ${H})`;
+      const flip = shown && rank && !REDUCE ? [...$$('.vb', bars), ...$$(':scope > [data-m]', names)].map(el => [el, el.getBoundingClientRect().left]) : [];
       rows.forEach((r, i) => {
         const b = $(`.vb[data-m="${r.m}"]`, bars);
         b.style.order = i;
@@ -342,8 +389,17 @@ function setup(D, R3, RV, EN) {
         if (r.ci) { ci.style.bottom = pos(r.ci[0]); ci.style.height = pos(r.ci[1] - r.ci[0]); }
         const val = $('.val', b);
         val.style.bottom = `calc(${pos(r.ci ? Math.max(r.v, r.ci[1]) : r.v)} + 6px)`;
-        val.innerHTML = `${mt.fmt(r.v)}<small>${r.m === BASE ? `<span class="ns">${I('基准', 'baseline')}</span>` : delta(r.d, r.dci, false, mt.fmt)}</small>`;
+        odo($('.vnum', val), mt.fmt(r.v), { hold: !shown, delay: i * 50 });
+        $('small', val).innerHTML = r.m === BASE ? `<span class="ns">${I('基准', 'baseline')}</span>` : delta(r.d, r.dci, false, mt.fmt);
       });
+      flip.forEach(([el, x0]) => {
+        const dx = x0 - el.getBoundingClientRect().left;
+        if (Math.abs(dx) > 1) el.animate([{ transform: `translateX(${dx}px)` }, { transform: 'none' }], { duration: 850, easing: 'cubic-bezier(.65,0,.25,1)' });
+      });
+      if (shown) {
+        if (rank) rows.forEach((r, i) => { if (rank[r.m] !== i) badge(r.m, rank[r.m] - i); });
+        rank = Object.fromEntries(rows.map((r, i) => [r.m, i]));
+      }
       const step = mt.max === 3 ? 1 : 25;
       $('.ax', bars).innerHTML = Array.from({ length: mt.max / step + 1 }, (_, i) => `<div style="bottom:calc(${(i * step) / mt.max} * ${H})"><span>${i * step}</span></div>`).join('')
         + `<div class="base" style="bottom:calc(${base / mt.max} * ${H})"></div>`;
@@ -354,14 +410,23 @@ function setup(D, R3, RV, EN) {
     };
     tabs($('[data-tabs]', sec), keys.map(k => MT[k].label), S.lb, i => { S.lb = i; draw(); });
     const card = $('.card', sec);
+    const at = e => e.target.closest('.vb, .vnames > [data-m]')?.dataset.m;
     card.addEventListener('pointerover', e => {
-      const m = e.target.closest('[data-m]')?.dataset.m;
+      const m = at(e);
       card.classList.toggle('hl', !!m);
       $$('[data-m]', card).forEach(x => x.classList.toggle('hot', x.dataset.m === m));
     });
-    card.addEventListener('pointerleave', () => card.classList.remove('hl'));
+    card.addEventListener('pointermove', e => {
+      if (e.pointerType !== 'mouse') return;
+      const m = at(e);
+      if (!m) { peek.hide(); return; }
+      warmPeeks();
+      peek.show(peekHTML(m), e.clientX, e.clientY, 'wide');
+    });
+    card.addEventListener('pointerleave', () => { card.classList.remove('hl'); peek.hide(); });
+    card.addEventListener('click', e => { const m = at(e); if (m) openBest(m); });
     draw();
-    onVisible(bars, () => { shown = true; requestAnimationFrame(draw); });
+    onVisible(bars, () => { shown = true; names.classList.add('shown'); requestAnimationFrame(draw); });
   }
 
   // ---------- core vs baseline ----------
@@ -372,8 +437,12 @@ function setup(D, R3, RV, EN) {
     const K = [[I('GSB 优势率(对全体)', 'GSB win rate (vs all)'), v2('gsb_advantage_rate')], [I('首位率', 'First-place rate'), v2('first_place_rate')], [I('绝对分均值', 'Mean absolute score'), v2('abs_mean'), 0, f2],
       [I('高分率(≥2)', 'High-score rate (≥2)'), v2('high_score_rate')], [I('Must have 通过率', 'Must have pass rate'), v3('must')], [I('Nice to have 通过率', 'Nice to have pass rate'), v3('nice')],
       [I('Pros 密度', 'Pros density'), v2('pros_density')], [I('Cons 密度', 'Cons density'), v2('cons_density'), 1]];
-    $('#core [data-slot]').innerHTML = (g ? `<div class="kpi wide"><small>${I('直接 GSB', 'Head-to-head GSB')}</small><b>${g.G} : ${g.S} : ${g.B}</b><span>${I(`G:S:B，优势率 ${f1(g.advantage_rate)}%（CI ${g.ci95 ? g.ci95.join('~') : '—'}），净胜率 ${f1(g.net_win_rate)}%`, `G:S:B, win rate ${f1(g.advantage_rate)}% (CI ${g.ci95 ? g.ci95.join('~') : '—'}), net win rate ${f1(g.net_win_rate)}%`)}</span></div>` : '')
-      + K.map(([n, x, lb, fm = f1]) => `<div class="kpi"><small>${n}</small><b>${fm(x.v)}</b><span>${esc(BASE)} ${fm(x.b)}${I('，', ', ')}Δ ${delta(x.d, x.c, lb, fm)}</span></div>`).join('');
+    $('#core [data-slot]').innerHTML = (g ? `<div class="kpi wide"><small>${I('直接 GSB', 'Head-to-head GSB')}</small><b data-odo="${g.G} : ${g.S} : ${g.B}"></b><span>${I(`G:S:B，优势率 ${f1(g.advantage_rate)}%（CI ${g.ci95 ? g.ci95.join('~') : '—'}），净胜率 ${f1(g.net_win_rate)}%`, `G:S:B, win rate ${f1(g.advantage_rate)}% (CI ${g.ci95 ? g.ci95.join('~') : '—'}), net win rate ${f1(g.net_win_rate)}%`)}</span></div>` : '')
+      + K.map(([n, x, lb, fm = f1]) => `<div class="kpi"><small>${n}</small><b data-odo="${fm(x.v)}"></b><span>${esc(BASE)} ${fm(x.b)}${I('，', ', ')}Δ ${delta(x.d, x.c, lb, fm)}</span></div>`).join('');
+    $$('#core [data-odo]').forEach((b, i) => {
+      odo(b, b.dataset.odo, { hold: true });
+      onVisible(b, () => odo(b, b.dataset.odo, { delay: i * 60 }));
+    });
   }
 
   // ---------- question explorer ----------
@@ -393,7 +462,7 @@ function setup(D, R3, RV, EN) {
       list.innerHTML = l.map(q => `<div class="ex-item ${q.slug === S.q ? 'on' : ''}" data-slug="${q.slug}">
         <span class="qid">${q.qid}</span><span class="qt">${esc(tSum(q))}</span>
         <div class="row"><span class="pill">${esc(q.category)}</span><span class="pill ${diffCls(q.diff)}">${esc(tDiff(q.diff))}</span>
-          <span class="spark" title="${I('本题 GSB 优势率', 'GSB win rate on this prompt')}">${ORDER.filter(m => q.models[m]).map(m => `<i style="height:${Math.max(2, (q.models[m].adv || 0) / 100 * 16)}px;background:${COLOR[m]}" title="${short(m)} ${f1(q.models[m].adv)}"></i>`).join('')}</span></div></div>`).join('')
+          <span class="spark" title="${I('本题 GSB 优势率', 'GSB win rate on this prompt')}">${ORDER.filter(m => q.models[m]).map((m, j) => `<i style="height:${Math.max(2, (q.models[m].adv || 0) / 100 * 16)}px;background:${COLOR[m]};--d:${j}" title="${short(m)} ${f1(q.models[m].adv)}"></i>`).join('')}</span></div></div>`).join('')
         || `<p class="muted" style="padding:16px">${I('没有符合条件的题目', 'No matching prompts')}</p>`;
     };
     const meta = it => `${esc(tDim(it.dim))} · ${esc(tEv(it.ev))} · ${esc(it.type)} · ${esc(it.nec)}`;
@@ -414,7 +483,7 @@ function setup(D, R3, RV, EN) {
           </div>
           <div>
             <div class="label">${I('判分', 'Verdicts')} · ${esc(m)}</div>
-            <ul class="items">${q.items.map(it => `<li>${it.audio ? audioMark() : mark(it.r[m])}<span>${prio(it.p)} ${esc(it.c)}<small>${meta(it)}</small></span></li>`).join('')}</ul>
+            <ul class="items">${q.items.map((it, i) => `<li style="--i:${i}">${it.audio ? audioMark() : mark(it.r[m])}<span>${prio(it.p)} ${esc(it.c)}<small>${meta(it)}</small></span></li>`).join('')}</ul>
             ${zhNote()}
           </div>
         </div>`;
@@ -427,7 +496,7 @@ function setup(D, R3, RV, EN) {
       return `<div class="label">${I('Rubrics 与各模型判分结果（三家评审多数票）', 'Rubric and verdicts per model (majority of three judges)')}</div>
         <div class="card tbl-wrap"><table class="tbl rub">
           <tr><th>${I('判分标准', 'Check')}</th>${ms.map(m => `<th class="${m === S.m ? 'on' : ''}">${mn(m, short(m))}</th>`).join('')}</tr>
-          ${q.items.map((it, i) => `<tr><td>${i + 1}. ${prio(it.p)} ${esc(it.c)}<small>${meta(it)}</small></td>${ms.map(m => `<td class="${m === S.m ? 'on' : ''}">${it.audio ? audioMark() : mark(it.r[m])}</td>`).join('')}</tr>`).join('')}
+          ${q.items.map((it, i) => `<tr><td>${i + 1}. ${prio(it.p)} ${esc(it.c)}<small>${meta(it)}</small></td>${ms.map((m, j) => `<td class="${m === S.m ? 'on' : ''}" style="--d:${i + j}">${it.audio ? audioMark() : mark(it.r[m])}</td>`).join('')}</tr>`).join('')}
           <tr class="total"><td>${I(`通过项（共 ${n} 条${au ? `，另 ${au} 条待音频` : ''}）`, `Passed (${n} checks${au ? `, ${au} more awaiting audio` : ''})`)}</td>${ms.map(m => `<td>${passN(q, m)} / ${n}</td>`).join('')}</tr>
           <tr class="total"><td>${I('Must 通过率', 'Must pass rate')}</td>${ms.map(m => `<td>${f1(q.r3?.[m]?.must)}</td>`).join('')}</tr>
           <tr class="total"><td>${I('门槛分 0-100', 'Gate score 0–100')}</td>${ms.map(m => { const g = q.r3?.[m]?.gate; return `<td style="color:${g < 60 ? 'var(--bad)' : 'inherit'}">${g != null ? Math.round(g) : '—'}</td>`; }).join('')}</tr>
@@ -440,17 +509,18 @@ function setup(D, R3, RV, EN) {
           ${vp(q, m)}
           <div class="bd"><div class="figs" style="margin-top:0"><span>${I('门槛分', 'Gate')} <b>${q.r3?.[m]?.gate != null ? Math.round(q.r3[m].gate) : '—'}</b></span><span>${I('绝对分', 'Abs.')} <b>${d.score ?? '—'}</b></span><a href="${MEDIA}eval/${m}/${q.slug}.html" target="_blank" rel="noopener">HTML</a></div></div></div>`; }).join('')}</div>`;
     };
-    const renderMain = () => {
+    const renderMain = zap => {
       const q = QS[S.q];
       main.innerHTML = `<div class="ex-head"><div class="qid">${q.qid}</div><h3>${esc(tSum(q))}</h3>
           <div class="meta"><span class="pill">${esc(q.category)}</span> <span class="pill ${diffCls(q.diff)}">${esc(tDiff(q.diff))}</span> · @${esc(q.author)}${q.post_url ? ` · <a href="${esc(q.post_url)}" target="_blank" rel="noopener">${I('原帖', 'Original post')}</a>` : ''}</div></div>
         <div class="ex-tabs">${[['work', I('作品与判分', 'Output & verdicts')], ['prompt', I('题目', 'Prompt')], ['all', I('对比全部模型', 'Compare all models')]].map(([k, n]) => `<button data-p="${k}" class="${k === S.pane ? 'on' : ''}">${n}</button>`).join('')}</div>
         <div class="ex-pane anim">${S.pane === 'work' ? paneWork(q) : S.pane === 'prompt' ? panePrompt(q) : paneAll(q)}</div>`;
+      if (zap) tvStatic($('.vp.big', main));
     };
     const select = (slug, scroll) => {
       S.q = slug;
       $$('.ex-item', list).forEach(x => x.classList.toggle('on', x.dataset.slug === slug));
-      renderMain();
+      renderMain(true);
       if (scroll) sec.scrollIntoView({ behavior: 'smooth', block: 'start' });
     };
     fl.addEventListener('click', e => {
@@ -466,15 +536,16 @@ function setup(D, R3, RV, EN) {
       const p = e.target.closest('[data-p]');
       if (p) { S.pane = p.dataset.p; renderMain(); return; }
       const m = e.target.closest('.model-pills [data-m]');
-      if (m) { S.m = m.dataset.m; renderMain(); return; }
+      if (m) { if (m.dataset.m !== S.m) { S.m = m.dataset.m; renderMain(true); } return; }
       const pr = e.target.closest('.prompt');
       if (pr) pr.classList.toggle('open');
     });
     renderList();
     renderMain();
-    window.__goQ = qid => {
+    window.__goQ = (qid, m) => {
       const q = Q.find(x => x.qid === qid);
       if (!q) return;
+      if (m && q.models[m]) { S.m = m; S.pane = 'work'; }
       S.qCat = '';
       $$('[data-c]', fl).forEach((x, i) => x.classList.toggle('on', i === 0));
       $('[data-diff]', fl).value = '';
@@ -491,8 +562,8 @@ function setup(D, R3, RV, EN) {
     const nice = (lo, hi) => { const r = hi - lo, s = [0.1, 0.2, 0.25, 0.5, 1, 2, 2.5, 5, 10, 20, 25].find(x => r / x <= 6) || 25; return { lo: Math.floor(lo / s) * s, hi: Math.ceil(hi / s) * s, s }; };
     const median = a => [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)];
     plot.innerHTML = `<svg viewBox="0 0 ${W} ${Hh}"><rect class="quad"/><text class="quad-t"></text><g class="grid"></g><g class="axis"></g>`
-      + ORDER.map(m => `<g class="pt" data-m="${m}"><line class="h" stroke="${COLOR[m]}" stroke-width="2" opacity=".5"/><line class="v" stroke="${COLOR[m]}" stroke-width="2" opacity=".5"/>
-        <circle r="13" fill="#fff" stroke="${COLOR[m]}" stroke-width="2.5"/><svg x="-8" y="-8" width="16" height="16" viewBox="0 0 24 24" fill="#141413" fill-rule="evenodd">${logoInner(m)}</svg>
+      + ORDER.map(m => `<g class="pt" data-m="${m}"><line class="dl dx"/><line class="dl dy"/><line class="h" stroke="${COLOR[m]}" stroke-width="2" opacity=".5"/><line class="v" stroke="${COLOR[m]}" stroke-width="2" opacity=".5"/>
+        <circle class="ring" r="13" fill="none" stroke="${COLOR[m]}" stroke-width="2"/><circle r="13" fill="#fff" stroke="${COLOR[m]}" stroke-width="2.5"/><svg x="-8" y="-8" width="16" height="16" viewBox="0 0 24 24" fill="#141413" fill-rule="evenodd">${logoInner(m)}</svg>
         <text x="17" y="-12">${esc(short(m))}</text></g>`).join('') + '</svg>';
     const svg = $('svg', plot);
     const draw = i => {
@@ -522,6 +593,9 @@ function setup(D, R3, RV, EN) {
         const xc = p.x.ci || [p.x.v, p.x.v], yc = p.y.ci || [p.y.v, p.y.v];
         h.setAttribute('x1', X(xc[0]) - cx); h.setAttribute('x2', X(xc[1]) - cx); h.setAttribute('y1', 0); h.setAttribute('y2', 0);
         v.setAttribute('y1', Y(yc[0]) - cy); v.setAttribute('y2', Y(yc[1]) - cy); v.setAttribute('x1', 0); v.setAttribute('x2', 0);
+        const dx = $('.dx', el), dy = $('.dy', el);
+        dx.setAttribute('x1', 0); dx.setAttribute('y1', 0); dx.setAttribute('x2', ml - cx); dx.setAttribute('y2', 0);
+        dy.setAttribute('x1', 0); dy.setAttribute('y1', 0); dy.setAttribute('x2', 0); dy.setAttribute('y2', Hh - mb - cy);
       });
       $('[data-title]', sec).textContent = `${my.label} vs ${mx.label}`;
       $('[data-sub]', sec).textContent = I(`${my.label} · ${mx.label} · 十字线为各自的 95% 置信区间`, `${my.label} · ${mx.label} · crosshairs show each metric's 95% CI`);
@@ -534,7 +608,15 @@ function setup(D, R3, RV, EN) {
       card.classList.toggle('hl', !!m);
       $$('.pt', svg).forEach(p => p.classList.toggle('hot', p.dataset.m === m));
     });
-    svg.addEventListener('pointerleave', () => card.classList.remove('hl'));
+    svg.addEventListener('pointermove', e => {
+      if (e.pointerType !== 'mouse') return;
+      const m = e.target.closest('.pt')?.dataset.m;
+      if (!m) { peek.hide(); return; }
+      warmPeeks();
+      peek.show(peekHTML(m), e.clientX, e.clientY, 'wide');
+    });
+    svg.addEventListener('pointerleave', () => { card.classList.remove('hl'); peek.hide(); });
+    svg.addEventListener('click', e => { const m = e.target.closest('.pt')?.dataset.m; if (m) openBest(m); });
 
     const ranksOf = k => { const vals = ORDER.map(m => MT[k].get(m).v); return vals.map(v => vals.filter(x => x > v).length + (vals.filter(x => x === v).length + 1) / 2); };
     const spear = (a, b) => { const ra = ranksOf(a), rb = ranksOf(b), n = ra.length, ma = ra.reduce((s, x) => s + x, 0) / n, mb = rb.reduce((s, x) => s + x, 0) / n;
@@ -561,7 +643,7 @@ function setup(D, R3, RV, EN) {
       { t: I('按 Necessity', 'By necessity'), sub: I('Rubric 通过率，Explicit / Implicit', 'Rubric pass rate, Explicit / Implicit'), cols: by('nec', distinct('nec')) },
     ];
     const mix = (a, b, t) => a.map((x, i) => Math.round(x + (b[i] - x) * t));
-    const color = t => { const c = t < .5 ? mix([204, 98, 64], [240, 238, 230], t * 2) : mix([240, 238, 230], [88, 122, 72], (t - .5) * 2); return `background:rgb(${c});color:${Math.abs(t - .5) > .32 ? '#fff' : 'var(--ink)'}`; };
+    const color = t => { const c = t < .5 ? mix([204, 98, 64], [240, 238, 230], t * 2) : mix([240, 238, 230], [59, 127, 77], (t - .5) * 2); return `background:rgb(${c});color:${Math.abs(t - .5) > .32 ? '#fff' : 'var(--ink)'}`; };
     const draw = i => {
       S.bd = i;
       const vw = VIEWS[i];
@@ -570,10 +652,15 @@ function setup(D, R3, RV, EN) {
       slot.innerHTML = `<table class="heat in"><tr><th></th>${vw.cols.map(c => `<th>${esc(c.c)}<small>${typeof c.n === 'number' ? I(`${c.n} 条`, `${c.n} checks`) : c.n}</small></th>`).join('')}</tr>
         ${ORDER.map((m, r) => `<tr><th class="row">${mn(m)}</th>${vw.cols.map((c, j) => {
           const v = vals[j][r], col = vals[j].filter(x => x != null), lo = Math.min(...col), hi = Math.max(...col);
-          return `<td style="${v == null ? '' : color(hi > lo ? (v - lo) / (hi - lo) : .5)};--i:${k++}">${f1(v)}</td>`;
+          return `<td data-r="${r}" data-j="${j}" style="${v == null ? '' : color(hi > lo ? (v - lo) / (hi - lo) : .5)};--i:${k++}">${f1(v)}</td>`;
         }).join('')}</tr>`).join('')}</table>`;
       const tb = $('table', slot);
       if (!REDUCE) { tb.classList.remove('in'); requestAnimationFrame(() => requestAnimationFrame(() => tb.classList.add('in'))); }
+      setTimeout(() => tb.classList.add('done'), REDUCE ? 0 : 1400);
+      crosshair(tb, td => {
+        const r = +td.dataset.r, j = +td.dataset.j, v = vals[j][r];
+        return `<div class="pk-hd" style="margin-bottom:4px">${mn(ORDER[r])}</div>${esc(vw.cols[j].c)} · <b>${f1(v)}</b><div class="pk-ft">${esc(vw.sub)}</div>`;
+      });
       $('[data-title]', sec).textContent = vw.t;
       $('[data-sub]', sec).textContent = vw.sub;
     };
@@ -589,21 +676,27 @@ function setup(D, R3, RV, EN) {
       PM[p.a + '|' + p.b] = p;
       PM[p.b + '|' + p.a] = { ...p, adv: 100 - p.adv, ci95: p.ci95 && [100 - p.ci95[1], 100 - p.ci95[0]], G: p.B, B: p.G };
     });
-    const heat = v => { const a = Math.min(1, Math.pow(Math.abs(v - 50) / 50, .8)) * .9 + .05; return `background:${v >= 50 ? `rgba(88,122,72,${a})` : `rgba(204,98,64,${a})`};color:${a > .5 ? '#fff' : 'var(--ink)'}`; };
+    const heat = v => { const a = Math.min(1, Math.pow(Math.abs(v - 50) / 50, .8)) * .9 + .05; return `background:${v >= 50 ? `rgba(59,127,77,${a})` : `rgba(204,98,64,${a})`};color:${a > .5 ? '#fff' : 'var(--ink)'}`; };
     let k = 0;
     $('#matrix [data-slot]').innerHTML = `<table class="heat"><tr><th></th>${ORDER.map(m => `<th>${mn(m, short(m))}</th>`).join('')}</tr>
       ${ORDER.map(a => `<tr><th class="row">${mn(a, short(a))}</th>${ORDER.map(b => {
         if (a === b) return '<td class="self">-</td>';
         const p = PM[a + '|' + b];
         if (!p) return '<td class="self">-</td>';
-        return `<td class="${p.significant ? 'sig' : ''}" style="${heat(p.adv)};--i:${k++}" title="G:S:B ${p.G}:${p.S}:${p.B}  CI ${p.ci95 ? p.ci95.join('~') : '-'}">${f1(p.adv)}${p.significant ? '*' : ''}</td>`;
+        return `<td class="${p.significant ? 'sig' : ''}" data-a="${a}" data-b="${b}" style="${heat(p.adv)};--i:${k++}">${f1(p.adv)}${p.significant ? '*' : ''}</td>`;
       }).join('')}</tr>`).join('')}</table>`;
-    onVisible($('#matrix'), () => $('#matrix .heat').classList.add('in'));
+    const tb = $('#matrix .heat');
+    crosshair(tb, td => {
+      const { a, b } = td.dataset, p = PM[a + '|' + b];
+      return p ? `<div class="pk-hd" style="justify-content:flex-start;margin-bottom:4px">${mn(a, short(a))}<span class="mono">vs</span>${mn(b, short(b))}</div>
+        ${I('优势率', 'Win rate')} <b>${f1(p.adv)}${p.significant ? '*' : ''}</b> · G:S:B ${p.G}:${p.S}:${p.B}<div class="pk-ft">95% CI ${p.ci95 ? p.ci95.join(' ~ ') : '—'}${p.significant ? I(' · 显著', ' · significant') : ''}</div>` : '';
+    });
+    onVisible($('#matrix'), () => { tb.classList.add('in'); setTimeout(() => tb.classList.add('done'), REDUCE ? 0 : 1300); });
   }
 
   // ---------- abs distribution ----------
   function renderAbs() {
-    const DC = { '0': '#b5523b', '0.5': '#c46a45', '1': '#d08a4f', '1.5': '#d9ad5a', '2': '#9bb06a', '2.5': '#6f9a5c', '3': '#4f7a4a' };
+    const DC = { '0': '#b9553d', '0.5': '#c76e3c', '1': '#d18e46', '1.5': '#d8b260', '2': '#8aab67', '2.5': '#58945b', '3': '#3b7f4d' };
     const judges = Object.keys(A.per_judge_scores);
     $('#abs [data-slot]').innerHTML = `<table class="tbl"><tr><th>${I('模型', 'Model')}</th><th>${I('分布', 'Distribution')}</th><th class="num">${I('均值', 'Mean')}</th><th>${I('各评审均分', 'Mean by judge')}</th></tr>
       ${ORDER.map(m => { const d = RB[m].abs_dist, n = Object.values(d).reduce((a, b) => a + b, 0);
@@ -619,7 +712,7 @@ function setup(D, R3, RV, EN) {
     const V = RV.vibe_dict, cb = RB[CORE];
     $('#vibe [data-slot]').innerHTML = `<table class="tbl"><tr><th>${I('标签', 'Tag')}</th>${ORDER.map(m => `<th class="num">${mn(m, short(m))}</th>`).join('')}<th class="num">${short(CORE)} Lift</th></tr>
       ${Object.keys(V).map(t => { const row = ORDER.map(m => RB[m].tag_density[t] || 0), hi = Math.max(...row, 1), pros = V[t].kind === 'pros';
-        return `<tr><td><span class="pill ${V[t].kind}">${esc(t)}</span> ${esc(I(V[t].text, EN.vibe[t] || V[t].text))}</td>${row.map(v => `<td class="num" style="background:rgba(${pros ? '88,122,72' : '204,98,64'},${((v / hi) * .28).toFixed(3)})">${f1(v)}</td>`).join('')}
+        return `<tr><td><span class="pill ${V[t].kind}">${esc(t)}</span> ${esc(I(V[t].text, EN.vibe[t] || V[t].text))}</td>${row.map(v => `<td class="num" style="background:rgba(${pros ? '59,127,77' : '204,98,64'},${((v / hi) * .28).toFixed(3)})">${f1(v)}</td>`).join('')}
           <td class="num">${cb ? delta(cb.tag_lift_vs_baseline[t], [cb.tag_lift_vs_baseline[t], cb.tag_lift_vs_baseline[t]], !pros) : '—'}</td></tr>`; }).join('')}</table>`;
   }
 
@@ -644,7 +737,7 @@ function setup(D, R3, RV, EN) {
   function renderCost() {
     const C = RV.cost_cny, total = RV.cost_total;
     const judges = [...new Set(Object.keys(C).map(k => k.split(':')[1]))];
-    const kinds = [['gsb2', I('GSB 排序', 'GSB ranking'), '#6a9bcc'], ['judge2', I('绝对分 + Rubric', 'Absolute score + rubric'), '#d97757']];
+    const kinds = [['gsb2', I('GSB 排序', 'GSB ranking'), '#4a4844'], ['judge2', I('绝对分 + Rubric', 'Absolute score + rubric'), '#d97757']];
     const rows = judges.map(j => ({ j, parts: kinds.map(([k]) => C[`${k}:${j}`] || 0) })).map(r => ({ ...r, sum: r.parts.reduce((a, b) => a + b, 0) })).sort((a, b) => b.sum - a.sum);
     const hi = Math.max(...rows.map(r => r.sum));
     $('#cost [data-slot]').innerHTML = `<div class="chart-title"><div><h3>${I('评审花费（¥）', 'Judging cost (¥)')}</h3><p>${I(`按评审模型和评审方式拆分 · 合计 ¥${total}`, `By judge model and method · total ¥${total}`)}</p></div></div>

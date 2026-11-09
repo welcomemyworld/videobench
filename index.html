@@ -14,17 +14,18 @@
   <div class="wrap bar">
     <a class="logo" href="#top" aria-label="VideoBench">
       <svg class="logo-ic" viewBox="0 0 32 32" aria-hidden="true"><rect width="32" height="32" rx="8" fill="#141413"/><path d="M11 9.5l11 6.5-11 6.5z" fill="#d97757"/><rect class="ph" x="24" y="7" width="2" height="18" rx="1" fill="#faf9f5"/></svg>
-      <span class="t">VideoBench</span>
+      <span class="t">Video<b>Bench</b></span>
     </a>
     <nav class="secnav" id="secnav"></nav>
+    <span class="tcode" id="tcode" aria-hidden="true"></span>
     <div class="lang" id="lang" role="group" aria-label="Language">
       <button data-lang="zh">中</button><button data-lang="en">EN</button>
     </div>
   </div>
-  <div class="progress" id="progress"></div>
+  <div class="scrub" id="scrub" aria-hidden="true"></div>
 </header>
 
-<main class="wrap" id="app"><p class="muted" style="padding:80px 0">Loading…</p></main>
+<main class="wrap" id="app"><div class="leader" role="status" aria-label="Loading"><div class="dial"><i></i><b>3</b><b>2</b><b>1</b></div><span>LOADING</span></div></main>
 <footer id="foot"></footer>
 
 <script src="assets/fx.js"></script>
